@@ -1,7 +1,7 @@
 """Interactive setup wizard for bicameral-mcp.
 
 Guides the user through selecting a repo and installs the MCP server
-config into Claude Code.
+config into Claude Code with local (project) scope.
 
 Usage: bicameral-mcp setup
        bicameral-mcp setup /path/to/repo
@@ -17,14 +17,12 @@ from pathlib import Path
 
 def _detect_repo(hint: str | None = None) -> Path:
     """Detect or prompt for the repo path."""
-    # If hint provided, use it
     if hint:
         p = Path(hint).resolve()
         if p.is_dir():
             return p
         print(f"  Path not found: {p}")
 
-    # Try cwd
     cwd = Path.cwd()
     git_root = _find_git_root(cwd)
 
@@ -33,7 +31,6 @@ def _detect_repo(hint: str | None = None) -> Path:
         if answer in ("", "y", "yes"):
             return git_root
 
-    # Manual entry
     while True:
         raw = input("\n  Enter the path to your repo: ").strip()
         if not raw:
@@ -58,16 +55,11 @@ def _find_git_root(start: Path) -> Path | None:
 
 
 def _detect_runner() -> tuple[str, list[str]]:
-    """Detect the best available Python package runner.
-
-    Returns (command, args) for the MCP server config.
-    Priority: uvx > pipx > python -m
-    """
+    """Detect the best available Python package runner."""
     if shutil.which("uvx"):
         return ("uvx", ["bicameral-mcp"])
     if shutil.which("pipx"):
         return ("pipx", ["run", "bicameral-mcp"])
-    # Fall back to python -m
     python = "python3" if shutil.which("python3") else "python"
     return (python, ["-m", "bicameral_mcp"])
 
@@ -84,26 +76,55 @@ def _build_config(repo_path: Path) -> dict:
     }
 
 
-def _install_claude_code(repo_path: Path) -> bool:
-    """Install via `claude mcp add-json`."""
+def _install_claude_code_local(repo_path: Path) -> bool:
+    """Install via `claude mcp add-json` with local (project) scope.
+
+    Creates .mcp.json in the repo root if it doesn't exist.
+    """
     config = _build_config(repo_path)
     config_json = json.dumps(config)
 
-    try:
+    # First try via claude CLI
+    if shutil.which("claude"):
         result = subprocess.run(
-            ["claude", "mcp", "add-json", "bicameral", "--scope", "user", config_json],
+            ["claude", "mcp", "add-json", "bicameral", "--scope", "local", config_json],
             capture_output=True,
             text=True,
             timeout=10,
+            cwd=str(repo_path),
         )
         if result.returncode == 0:
-            print(f"  Installed in Claude Code (user scope) using {config['command']}")
+            print(f"  Installed via Claude CLI (local scope) using {config['command']}")
             return True
-        else:
-            print(f"  claude mcp add-json failed: {result.stderr.strip()}")
-            return False
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+        # If it failed because it already exists, that's fine
+        if "already exists" in result.stderr:
+            print(f"  Already configured in local scope — updating config")
+            # Remove and re-add
+            subprocess.run(
+                ["claude", "mcp", "remove", "bicameral", "--scope", "local"],
+                capture_output=True, text=True, timeout=10, cwd=str(repo_path),
+            )
+            result = subprocess.run(
+                ["claude", "mcp", "add-json", "bicameral", "--scope", "local", config_json],
+                capture_output=True, text=True, timeout=10, cwd=str(repo_path),
+            )
+            if result.returncode == 0:
+                print(f"  Updated in Claude Code (local scope) using {config['command']}")
+                return True
+
+    # Fallback: write .mcp.json directly
+    mcp_json_path = repo_path / ".mcp.json"
+    existing = {}
+    if mcp_json_path.exists():
+        try:
+            existing = json.loads(mcp_json_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    existing.setdefault("mcpServers", {})["bicameral"] = config
+    mcp_json_path.write_text(json.dumps(existing, indent=2) + "\n")
+    print(f"  Wrote {mcp_json_path}")
+    return True
 
 
 def run_setup(repo_hint: str | None = None) -> int:
@@ -115,38 +136,27 @@ def run_setup(repo_hint: str | None = None) -> int:
     print("  └─────────────────────────────────────────┘")
     print()
 
-    # Step 1: Select repo
     repo_path = _detect_repo(repo_hint)
     print(f"\n  Repo: {repo_path}")
 
-    # Step 2: Detect runner
     command, _ = _detect_runner()
     if command not in ("uvx", "pipx"):
         print(f"\n  Note: using '{command} -m bicameral_mcp' as runner.")
-        print("  Make sure bicameral-mcp is installed: pip install bicameral-mcp")
+        print("  Install a package runner for zero-install: pip install pipx")
 
-    # Step 3: Install to Claude Code
     print()
-    if shutil.which("claude"):
-        if _install_claude_code(repo_path):
-            print(f"\n  Done! Bicameral MCP is ready in Claude Code.")
-            print(f"  Analyzing repo: {repo_path}")
-            print()
-            print("  Try these in your next conversation:")
-            print('    "What decisions have been made about authentication?"')
-            print('    "Check if this file has any drifted decisions"')
-            print()
-            return 0
-
-    # Step 4: Fallback — show manual instructions
-    config = _build_config(repo_path)
-    config_json = json.dumps(config, indent=2)
-    print("  Claude Code CLI not found. Run this manually:\n")
-    print(f"    claude mcp add-json bicameral --scope user '{config_json}'")
-    print()
-    if command not in ("uvx", "pipx"):
-        print("  Or install a package runner for zero-install execution:")
-        print("    pip install pipx   # then re-run: bicameral-mcp setup")
+    if _install_claude_code_local(repo_path):
+        print(f"\n  Done! Bicameral MCP is configured for: {repo_path}")
+        print()
+        print("  Open this repo in Claude Code and try:")
+        print('    "What decisions have been made about authentication?"')
+        print('    "Check if this file has any drifted decisions"')
+        print()
+    else:
+        config = _build_config(repo_path)
+        config_json = json.dumps(config, indent=2)
+        print("  Could not auto-install. Add this to .mcp.json in your repo root:\n")
+        print(f"    {config_json}")
         print()
 
     return 0
