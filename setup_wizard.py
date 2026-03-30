@@ -127,6 +127,32 @@ def _install_claude_code_local(repo_path: Path) -> bool:
     return True
 
 
+def _install_skills(repo_path: Path) -> int:
+    """Copy skill definitions into .claude/skills/ in the target repo."""
+    # Skills are bundled in the package at skills/
+    skills_src = Path(__file__).parent / "skills"
+    if not skills_src.exists():
+        return 0
+
+    skills_dst = repo_path / ".claude" / "skills"
+    installed = 0
+
+    for skill_dir in sorted(skills_src.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            continue
+
+        dst_dir = skills_dst / skill_dir.name
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst_file = dst_dir / "SKILL.md"
+        dst_file.write_text(skill_md.read_text())
+        installed += 1
+
+    return installed
+
+
 def run_setup(repo_hint: str | None = None) -> int:
     """Run the interactive setup wizard."""
     print()
@@ -144,19 +170,22 @@ def run_setup(repo_hint: str | None = None) -> int:
         print(f"\n  Note: using '{command} -m bicameral_mcp' as runner.")
         print("  Install a package runner for zero-install: pip install pipx")
 
+    # Install MCP server config
     print()
-    if _install_claude_code_local(repo_path):
-        print(f"\n  Done! Bicameral MCP is configured for: {repo_path}")
-        print()
-        print("  Open this repo in Claude Code and try:")
-        print('    "What decisions have been made about authentication?"')
-        print('    "Check if this file has any drifted decisions"')
-        print()
-    else:
-        config = _build_config(repo_path)
-        config_json = json.dumps(config, indent=2)
-        print("  Could not auto-install. Add this to .mcp.json in your repo root:\n")
-        print(f"    {config_json}")
-        print()
+    _install_claude_code_local(repo_path)
+
+    # Install slash command skills
+    num_skills = _install_skills(repo_path)
+    if num_skills:
+        print(f"  Installed {num_skills} skills to .claude/skills/")
+
+    print(f"\n  Done! Bicameral MCP is configured for: {repo_path}")
+    print()
+    print("  Slash commands available:")
+    print("    /bicameral:ingest  — ingest a meeting transcript or PRD")
+    print("    /bicameral:search  — pre-flight: check prior decisions before coding")
+    print("    /bicameral:drift   — code review: check a file for drifted decisions")
+    print("    /bicameral:status  — dashboard: implementation status of all decisions")
+    print()
 
     return 0
