@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bicameral-mcp"
-version = "0.2.1"
+version = "0.2.2"
 description = "Decision ledger MCP server — ingests meeting transcripts, maps decisions to code, tracks drift"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -54,8 +54,5 @@ test = [
 bicameral-mcp = "server:cli_main"
 
 [tool.hatch.build.targets.wheel]
-packages = [".", "adapters", "handlers", "ledger", "code_locator", "skills"]
-exclude = ["tests", "visual-plan", "mocks"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"skills" = "skills"
+packages = ["."]
+exclude = ["tests", "visual-plan", "mocks", "test-results"]
