@@ -141,7 +141,7 @@ def _select_agents() -> list[str]:
 def _detect_runner() -> tuple[str, list[str]]:
     """Detect the best available Python package runner."""
     if shutil.which("uvx"):
-        return ("uvx", ["bicameral-mcp"])
+        return ("uvx", ["bicameral-mcp@latest"])
     if shutil.which("pipx"):
         return ("pipx", ["run", "bicameral-mcp"])
     python = "python3" if shutil.which("python3") else "python"

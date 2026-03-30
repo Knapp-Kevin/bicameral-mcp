@@ -51,7 +51,7 @@ Run from your repo root:
 ```bash
 claude mcp add-json bicameral --scope local '{
   "command": "uvx",
-  "args": ["bicameral-mcp"],
+  "args": ["bicameral-mcp@latest"],
   "env": {
     "REPO_PATH": "/path/to/your/repo",
     "SURREAL_URL": "surrealkv:///path/to/your/repo/.bicameral/ledger.db"
