@@ -27,32 +27,36 @@ Every software team makes hundreds of verbal decisions per week — in meetings,
 ### One-command setup
 
 ```bash
+# With pipx (recommended — most systems have it)
+pipx run bicameral-mcp setup
+
+# Or with uvx
 uvx bicameral-mcp setup
+
+# Or with pip
+pip install bicameral-mcp && bicameral-mcp setup
 ```
 
 This launches an interactive wizard that:
 1. Detects your repo (from cwd or prompts you)
-2. Installs the MCP config into Claude Code and/or Claude Desktop automatically
+2. Auto-detects the best available runner (uvx, pipx, or python)
+3. Installs the MCP config into Claude Code
 
 That's it. The server builds its code index on first tool call.
 
 ### Manual config
 
-If you prefer to configure manually, add to your MCP config:
+Add to your Claude Code MCP config via CLI:
 
-```json
-{
-  "mcpServers": {
-    "bicameral": {
-      "command": "uvx",
-      "args": ["bicameral-mcp"],
-      "env": {
-        "REPO_PATH": "/path/to/your/repo"
-      }
-    }
-  }
-}
+```bash
+claude mcp add-json bicameral --scope user '{
+  "command": "pipx",
+  "args": ["run", "bicameral-mcp"],
+  "env": { "REPO_PATH": "/path/to/your/repo" }
+}'
 ```
+
+Replace `"command": "pipx", "args": ["run", "bicameral-mcp"]` with `"command": "uvx", "args": ["bicameral-mcp"]` if you prefer uvx.
 
 ### Local development
 

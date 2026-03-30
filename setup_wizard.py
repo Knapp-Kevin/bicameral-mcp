@@ -1,7 +1,7 @@
 """Interactive setup wizard for bicameral-mcp.
 
 Guides the user through selecting a repo and installs the MCP server
-config into Claude Code, Claude Desktop, and/or Cursor.
+config into Claude Code.
 
 Usage: bicameral-mcp setup
        bicameral-mcp setup /path/to/repo
@@ -10,11 +10,8 @@ Usage: bicameral-mcp setup
 from __future__ import annotations
 
 import json
-import os
-import platform
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 
@@ -60,32 +57,27 @@ def _find_git_root(start: Path) -> Path | None:
     return None
 
 
-def _detect_clients() -> list[str]:
-    """Detect which MCP clients are available."""
-    clients = []
-    if shutil.which("claude"):
-        clients.append("claude-code")
-    if _claude_desktop_config_path().parent.exists():
-        clients.append("claude-desktop")
-    # Could add cursor detection here
-    return clients or ["claude-code"]  # default to claude-code instructions
+def _detect_runner() -> tuple[str, list[str]]:
+    """Detect the best available Python package runner.
 
-
-def _claude_desktop_config_path() -> Path:
-    """Return the Claude Desktop config file path."""
-    if platform.system() == "Darwin":
-        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
-    elif platform.system() == "Windows":
-        return Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json"
-    else:
-        return Path.home() / ".config" / "claude" / "claude_desktop_config.json"
+    Returns (command, args) for the MCP server config.
+    Priority: uvx > pipx > python -m
+    """
+    if shutil.which("uvx"):
+        return ("uvx", ["bicameral-mcp"])
+    if shutil.which("pipx"):
+        return ("pipx", ["run", "bicameral-mcp"])
+    # Fall back to python -m
+    python = "python3" if shutil.which("python3") else "python"
+    return (python, ["-m", "bicameral_mcp"])
 
 
 def _build_config(repo_path: Path) -> dict:
     """Build the MCP server config object."""
+    command, args = _detect_runner()
     return {
-        "command": "uvx",
-        "args": ["bicameral-mcp"],
+        "command": command,
+        "args": args,
         "env": {
             "REPO_PATH": str(repo_path),
         },
@@ -105,38 +97,13 @@ def _install_claude_code(repo_path: Path) -> bool:
             timeout=10,
         )
         if result.returncode == 0:
-            print("  Installed in Claude Code (user scope)")
+            print(f"  Installed in Claude Code (user scope) using {config['command']}")
             return True
         else:
             print(f"  claude mcp add-json failed: {result.stderr.strip()}")
             return False
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
-
-
-def _install_claude_desktop(repo_path: Path) -> bool:
-    """Install by writing to claude_desktop_config.json."""
-    config_path = _claude_desktop_config_path()
-
-    if not config_path.parent.exists():
-        return False
-
-    # Read existing config
-    if config_path.exists():
-        try:
-            existing = json.loads(config_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-    else:
-        existing = {}
-
-    servers = existing.setdefault("mcpServers", {})
-    servers["bicameral"] = _build_config(repo_path)
-
-    config_path.write_text(json.dumps(existing, indent=2))
-    print(f"  Installed in Claude Desktop: {config_path}")
-    print("  Restart Claude Desktop to activate.")
-    return True
 
 
 def run_setup(repo_hint: str | None = None) -> int:
@@ -152,40 +119,34 @@ def run_setup(repo_hint: str | None = None) -> int:
     repo_path = _detect_repo(repo_hint)
     print(f"\n  Repo: {repo_path}")
 
-    # Step 2: Detect clients
-    clients = _detect_clients()
-    installed = []
+    # Step 2: Detect runner
+    command, _ = _detect_runner()
+    if command not in ("uvx", "pipx"):
+        print(f"\n  Note: using '{command} -m bicameral_mcp' as runner.")
+        print("  Make sure bicameral-mcp is installed: pip install bicameral-mcp")
 
-    # Step 3: Install
+    # Step 3: Install to Claude Code
     print()
-    if "claude-code" in clients:
+    if shutil.which("claude"):
         if _install_claude_code(repo_path):
-            installed.append("Claude Code")
-
-    if "claude-desktop" in clients:
-        if _install_claude_desktop(repo_path):
-            installed.append("Claude Desktop")
+            print(f"\n  Done! Bicameral MCP is ready in Claude Code.")
+            print(f"  Analyzing repo: {repo_path}")
+            print()
+            print("  Try these in your next conversation:")
+            print('    "What decisions have been made about authentication?"')
+            print('    "Check if this file has any drifted decisions"')
+            print()
+            return 0
 
     # Step 4: Fallback — show manual instructions
-    if not installed:
-        config = _build_config(repo_path)
-        config_json = json.dumps({"mcpServers": {"bicameral": config}}, indent=2)
-        print("  Could not auto-install. Add this to your MCP config:\n")
-        print(f"  {config_json}")
-        print()
-        print("  Config file locations:")
-        print("    Claude Code:    claude mcp add-json bicameral --scope user '<json>'")
-        print(f"    Claude Desktop: {_claude_desktop_config_path()}")
-        print()
-
-    # Step 5: Summary
-    if installed:
-        print(f"\n  Done! Bicameral MCP is ready in: {', '.join(installed)}")
-        print(f"  Analyzing repo: {repo_path}")
-        print()
-        print("  Try these in your next conversation:")
-        print('    "What decisions have been made about authentication?"')
-        print('    "Check if this file has any drifted decisions"')
+    config = _build_config(repo_path)
+    config_json = json.dumps(config, indent=2)
+    print("  Claude Code CLI not found. Run this manually:\n")
+    print(f"    claude mcp add-json bicameral --scope user '{config_json}'")
+    print()
+    if command not in ("uvx", "pipx"):
+        print("  Or install a package runner for zero-install execution:")
+        print("    pip install pipx   # then re-run: bicameral-mcp setup")
         print()
 
     return 0
