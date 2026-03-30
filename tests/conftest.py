@@ -1,0 +1,88 @@
+"""Shared test fixtures.
+
+Run everything with: pytest tests/ -v
+
+Phase 1: requires indexed repo (code locator)
+Phase 2: requires SurrealDB (memory:// for tests)
+Phase 3: full E2E — exercises all handlers with real adapters
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "phase1: requires RealCodeLocatorAdapter")
+    config.addinivalue_line("markers", "phase2: requires SurrealDBLedgerAdapter + SurrealDB")
+    config.addinivalue_line("markers", "phase3: full E2E — requires both Phase 1 + Phase 2")
+
+
+
+@pytest.fixture
+def repo_path() -> str:
+    """Repo root. Defaults to the bicameral repo itself for Phase 1+ tests."""
+    return os.getenv("REPO_PATH", str(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))))
+
+
+@pytest.fixture
+def surreal_url() -> str:
+    return os.getenv("SURREAL_URL", "ws://localhost:8001")
+
+
+@pytest.fixture
+def sample_transcript() -> str:
+    return """\
+## Architecture Sync — 2026-03-24
+
+**Participants**: Jin, Silong
+
+**Decision 1**: Use BM25 + dependency graph for code search. No vector store.
+Rationale: BM25 is fast, deterministic, avoids embedding cost.
+Constraints: Must handle repos with 10k+ symbols in < 2s.
+
+**Decision 2**: Decision ledger as internal memory via vocab cache.
+Prior intent→code mappings feed back into generation to avoid redundant lookups.
+
+**Decision 3**: Status derived at query time from content-hash comparison.
+Rationale: Avoids stale status after commits without full re-index.
+"""
+
+
+@pytest.fixture
+def minimal_payload() -> dict:
+    """A minimal valid CodeLocatorPayload for ingestion tests."""
+    return {
+        "query": "test decision for ledger ingestion",
+        "repo": "test-repo",
+        "commit_hash": "testcommit001",
+        "analyzed_at": "2026-03-27T12:00:00Z",
+        "mappings": [
+            {
+                "span": {
+                    "span_id": "test-0",
+                    "source_type": "transcript",
+                    "text": "test decision for ledger ingestion",
+                    "speaker": "Jin",
+                    "source_ref": "test-meeting-001",
+                },
+                "intent": "test decision for ledger ingestion",
+                "symbols": ["test_function"],
+                "code_regions": [
+                    {
+                        "file_path": "pilot/mcp/server.py",
+                        "symbol": "test_function",
+                        "type": "function",
+                        "start_line": 1,
+                        "end_line": 20,
+                        "purpose": "test",
+                    }
+                ],
+                "dependency_edges": [],
+            }
+        ],
+    }

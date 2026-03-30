@@ -1,0 +1,198 @@
+"""pilot/mcp-owned runtime helpers for the real Code Locator integration.
+
+Git-state tracking, stale-index recovery, and index rebuild orchestration
+for the code locator package (code_locator/).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sqlite3
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+_INDEX_META_SQL = """\
+CREATE TABLE IF NOT EXISTS index_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+)
+"""
+
+
+@dataclass(frozen=True)
+class RepoIndexState:
+    repo_path: str
+    head_commit: str
+    branch: str
+
+
+def _default_cache_root() -> Path:
+    """Writable repo-level cache root for MCP-owned Code Locator state."""
+    repo_root = os.getenv("REPO_PATH")
+    if repo_root:
+        root = Path(repo_root).resolve() / ".bicameral"
+    else:
+        root = Path(__file__).resolve().parents[2] / ".bicameral"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def ensure_runtime_env() -> None:
+    """Provide repo-local defaults so the MCP server works without home-dir writes."""
+    cache_root = _default_cache_root()
+    os.environ.setdefault("CODE_LOCATOR_SQLITE_DB", str(cache_root / "code-graph.db"))
+
+
+
+
+def _git_stdout(repo_path: str, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def get_repo_index_state(repo_path: str) -> RepoIndexState:
+    repo = str(Path(repo_path).resolve())
+    branch = _git_stdout(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch == "HEAD":
+        branch = "DETACHED"
+    return RepoIndexState(
+        repo_path=repo,
+        head_commit=_git_stdout(repo, "rev-parse", "HEAD"),
+        branch=branch,
+    )
+
+
+def _connect_meta(db_path: str) -> sqlite3.Connection:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.execute(_INDEX_META_SQL)
+    return conn
+
+
+def record_index_state(db_path: str, repo_path: str) -> RepoIndexState:
+    state = get_repo_index_state(repo_path)
+    conn = _connect_meta(db_path)
+    conn.executemany(
+        """INSERT INTO index_meta (key, value)
+           VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        [
+            ("repo_path", state.repo_path),
+            ("head_commit", state.head_commit),
+            ("branch", state.branch),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return state
+
+
+def _get_meta(db_path: str, key: str) -> str:
+    conn = _connect_meta(db_path)
+    row = conn.execute("SELECT value FROM index_meta WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row[0] if row else ""
+
+
+def _symbol_count(db_path: str) -> int:
+    try:
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()
+        conn.close()
+        return int(row[0]) if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _clear_legacy_index_tables(db_path: str) -> None:
+    conn = _connect_meta(db_path)
+    for table in ("edges", "symbols", "indexed_files"):
+        try:
+            conn.execute(f"DELETE FROM {table}")
+        except sqlite3.OperationalError:
+            continue
+    conn.commit()
+    conn.close()
+
+
+def rebuild_index(repo_path: str, config, force: bool = False) -> None:
+    """Rebuild the underlying code locator index and persist git metadata."""
+    from code_locator.indexing.sqlite_store import SymbolDB
+    from code_locator.retrieval.bm25s_client import Bm25sClient
+
+    repo = str(Path(repo_path).resolve())
+    index_dir = str(Path(config.sqlite_db).parent)
+
+    if config.indexing_backend == "cocoindex":
+        from code_locator.indexing.cocoindex_pipeline import run_pipeline, sync_symbols_in_db
+        from code_locator.indexing.graph_builder import build_graph
+
+        run_pipeline(
+            repo,
+            config.sqlite_db,
+            config.embedding_model,
+            chunk_size=config.chunk_size,
+            chunk_overlap=config.chunk_overlap,
+        )
+        sync_symbols_in_db(config.sqlite_db)
+        db = SymbolDB(config.sqlite_db)
+        build_graph(db, repo)
+        db.close()
+    else:
+        from code_locator.indexing.index_builder import build_index
+
+        if force:
+            _clear_legacy_index_tables(config.sqlite_db)
+        build_index(repo, config.sqlite_db)
+
+    bm25 = Bm25sClient()
+    bm25.index(repo, index_dir)
+    record_index_state(config.sqlite_db, repo)
+
+
+def ensure_index_matches_repo(repo_path: str, config) -> bool:
+    """Refresh a populated local index when its recorded HEAD no longer matches."""
+    if _symbol_count(config.sqlite_db) == 0:
+        return False
+
+    current = get_repo_index_state(repo_path)
+    indexed_repo = _get_meta(config.sqlite_db, "repo_path")
+    indexed_head = _get_meta(config.sqlite_db, "head_commit")
+    bm25_path = Path(config.sqlite_db).parent / "bm25_index.pkl"
+
+    refresh_reason = ""
+    if not indexed_repo:
+        refresh_reason = "missing_repo_metadata"
+    elif str(Path(indexed_repo).resolve()) != current.repo_path:
+        refresh_reason = "repo_changed"
+    elif current.head_commit and indexed_head != current.head_commit:
+        refresh_reason = "head_commit_changed"
+    elif not bm25_path.exists():
+        refresh_reason = "missing_bm25"
+
+    if not refresh_reason:
+        return False
+
+    logger.info(
+        "[mcp] refreshing code locator index for %s (%s)",
+        current.repo_path,
+        refresh_reason,
+    )
+    rebuild_index(repo_path, config, force=True)
+    return True
