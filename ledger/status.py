@@ -18,13 +18,67 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def resolve_symbol_lines(
+    file_path: str,
+    symbol_name: str,
+    repo_path: str,
+    ref: str = "HEAD",
+) -> tuple[int, int] | None:
+    """Resolve a symbol's current line range by name via tree-sitter.
+
+    Returns (start_line, end_line) 1-indexed if found, None if not.
+    Falls back gracefully — if tree-sitter isn't available or the symbol
+    isn't found, returns None and the caller uses stored line numbers.
+    """
+    content = get_git_content(file_path, 1, 999999, repo_path, ref)
+    if content is None:
+        return None
+
+    try:
+        from code_locator.indexing.symbol_extractor import extract_symbols_from_content
+
+        ext = Path(file_path).suffix
+        lang_map = {
+            ".py": "python", ".js": "javascript", ".jsx": "javascript",
+            ".ts": "typescript", ".tsx": "typescript", ".java": "java",
+            ".go": "go", ".rs": "rust", ".cs": "csharp",
+        }
+        lang = lang_map.get(ext)
+        if lang is None:
+            return None
+
+        symbols = extract_symbols_from_content(content, lang, file_path)
+        for sym in symbols:
+            if sym.get("name") == symbol_name or sym.get("qualified_name") == symbol_name:
+                return (sym["start_line"], sym["end_line"])
+
+        # Try fuzzy: symbol_name might be unqualified
+        bare = symbol_name.split(".")[-1] if "." in symbol_name else symbol_name
+        for sym in symbols:
+            if sym.get("name") == bare:
+                return (sym["start_line"], sym["end_line"])
+
+    except (ImportError, Exception) as e:
+        logger.debug("[status] symbol resolution fallback: %s", e)
+
+    return None
+
+
 def hash_lines(content: str, start_line: int, end_line: int) -> str:
-    """SHA-256 of the specific line range (1-indexed, inclusive)."""
+    """SHA-256 of the specific line range (1-indexed, inclusive).
+
+    Normalizes whitespace before hashing to avoid false drift from:
+    - Trailing whitespace changes
+    - Tab/space conversion (auto-formatters)
+    - Trailing newline differences
+    """
     lines = content.splitlines()
     # Convert to 0-indexed
     start = max(0, start_line - 1)
     end = min(len(lines), end_line)
-    region = "\n".join(lines[start:end])
+    # Normalize: strip trailing whitespace per line
+    normalized = [line.rstrip() for line in lines[start:end]]
+    region = "\n".join(normalized)
     return hashlib.sha256(region.encode()).hexdigest()
 
 
@@ -79,6 +133,14 @@ def compute_content_hash(
     """
     content = get_git_content(file_path, start_line, end_line, repo_path, ref)
     if content is None:
+        return None
+    # Validate line range (warn but still hash — shorter file = drift signal)
+    line_count = len(content.splitlines())
+    if start_line < 1 or end_line < start_line:
+        logger.warning(
+            "[status] Invalid range %d:%d for %s",
+            start_line, end_line, file_path,
+        )
         return None
     return hash_lines(content, start_line, end_line)
 

@@ -163,6 +163,12 @@ class SurrealDBLedgerAdapter:
             end_line = region.get("end_line", 0)
             stored_hash = region.get("content_hash", "")
 
+            # Try symbol-name resolution first (survives line shifts + renames)
+            from .status import resolve_symbol_lines
+            resolved = resolve_symbol_lines(file_path, symbol_name, repo_path, ref=commit_hash)
+            if resolved:
+                start_line, end_line = resolved
+
             # Compute actual hash at this commit
             actual_hash = compute_content_hash(
                 file_path, start_line, end_line, repo_path, ref=commit_hash
@@ -173,6 +179,12 @@ class SurrealDBLedgerAdapter:
 
             # Update the region's content_hash + pinned_commit
             await update_region_hash(self._client, region_id, new_hash, commit_hash)
+            # If symbol resolution found new line numbers, update them
+            if resolved and (resolved[0] != region.get("start_line") or resolved[1] != region.get("end_line")):
+                await self._client.query(
+                    "UPDATE $rid SET start_line = $sl, end_line = $el",
+                    {"rid": region_id, "sl": resolved[0], "el": resolved[1]},
+                )
             regions_updated += 1
 
             # Update all intents mapped to this region
