@@ -145,10 +145,6 @@ async def test_ingest_symbols_field_sets_pending_status(indexed_repo):
 
 # ── Bug 1b: auto-ground via BM25 when no symbols provided ─────────────
 
-@pytest.mark.xfail(
-    reason="auto-grounding quality is Silong's P0 — skeleton in place, threshold/search tuning pending",
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_ingest_text_only_auto_grounds_via_bm25(indexed_repo, monkeypatch):
     """

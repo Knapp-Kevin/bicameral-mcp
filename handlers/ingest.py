@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import logging
+import re
 
 from adapters.ledger import get_ledger
 from contracts import IngestResponse, IngestStats, SourceCursorSummary
@@ -17,17 +18,55 @@ from contracts import IngestResponse, IngestStats, SourceCursorSummary
 logger = logging.getLogger(__name__)
 
 
-# Threshold from Decision Ledger Standard — llm provenance range 0.3–0.7, default gate 0.5.
-# Replaced with eval-calibrated value once Silong's RAG eval runs.
+# Threshold for BM25 file-level search. Replaced with eval-calibrated value
+# once Silong's RAG eval runs. Fuzzy token path (below) has no threshold —
+# rapidfuzz scores are already normalised 0–100.
 AUTO_GROUND_THRESHOLD = 0.5
+
+# Common English stop words to filter from intent descriptions before fuzzy
+# token matching. Keeps only semantically meaningful terms.
+_STOP_WORDS = frozenset({
+    "the", "and", "for", "that", "this", "with", "are", "from", "have",
+    "will", "when", "then", "been", "also", "into", "about", "should",
+    "must", "need", "each", "they", "their", "there", "which", "where",
+    "what", "than", "some", "more", "such", "only", "very", "just",
+    "like", "make", "made", "use", "used", "using", "after", "before",
+})
+
+
+def _regions_from_symbol_ids(symbol_ids: list[int], db, description: str) -> list[dict]:
+    """Resolve a list of symbol IDs to code_region dicts."""
+    regions = []
+    seen: set[int] = set()
+    for sid in symbol_ids:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        row = db.lookup_by_id(sid)
+        if row:
+            regions.append({
+                "symbol": row["qualified_name"] or row["name"],
+                "file_path": row["file_path"],
+                "start_line": row["start_line"],
+                "end_line": row["end_line"],
+                "type": row["type"],
+                "purpose": description,
+            })
+    return regions
 
 
 def _auto_ground_via_search(mappings: list[dict], repo: str) -> list[dict]:
-    """For mappings with no code_regions and no symbols, run BM25 search on the
-    intent description and backfill code_regions from the top-scoring file's symbols.
+    """Auto-ground mappings with no code_regions and no symbols.
 
-    This is the fallback for transcript-only ingestion where no symbol names are known.
-    Uses a hardcoded threshold of 0.5 — replace once eval pins the right value.
+    Two-stage approach:
+    1. BM25 search on full description → top file → expand to symbols (fast,
+       good for broad queries, threshold-gated).
+    2. Fuzzy token matching: tokenise description → rapidfuzz against symbol
+       names → direct symbol lookup (no threshold, catches cases where BM25
+       finds nothing e.g. short repos or low-frequency terms).
+
+    Stage 2 is the preliminary semantic grounding path that works without
+    Silong's RAG eval / threshold calibration.
     """
     db_path = os.getenv("CODE_LOCATOR_SQLITE_DB", "")
     if not db_path:
@@ -53,42 +92,58 @@ def _auto_ground_via_search(mappings: list[dict], repo: str) -> list[dict]:
             resolved.append(mapping)
             continue
 
+        code_regions = []
+
+        # ── Stage 1: BM25 file search ──────────────────────────────────────
         try:
             hits = locator.search_code(description)
+            top = next((h for h in hits if h.get("score", 0) >= AUTO_GROUND_THRESHOLD), None)
+            if top:
+                file_symbols = db.lookup_by_file(top["file_path"])
+                code_regions = [
+                    {
+                        "symbol": row["qualified_name"] or row["name"],
+                        "file_path": row["file_path"],
+                        "start_line": row["start_line"],
+                        "end_line": row["end_line"],
+                        "type": row["type"],
+                        "purpose": description,
+                    }
+                    for row in file_symbols[:5]
+                ]
+                if code_regions:
+                    logger.info(
+                        "[ingest] stage1 BM25 grounded '%s' → %s (%d symbols, score=%.2f)",
+                        description[:60], top["file_path"], len(code_regions), top["score"],
+                    )
         except Exception as exc:
-            logger.warning("[ingest] search_code failed for '%s': %s", description[:60], exc)
-            resolved.append(mapping)
-            continue
+            logger.warning("[ingest] BM25 search failed for '%s': %s", description[:60], exc)
 
-        # Take the top hit above threshold — file-level BM25, so we expand to its symbols
-        top = next((h for h in hits if h.get("score", 0) >= AUTO_GROUND_THRESHOLD), None)
-        if not top:
-            logger.debug("[ingest] no confident match for: %s", description[:60])
-            resolved.append(mapping)
-            continue
+        # ── Stage 2: fuzzy token matching (preliminary semantic grounding) ─
+        if not code_regions:
+            tokens = [
+                w for w in re.findall(r"[a-zA-Z]{4,}", description)
+                if w.lower() not in _STOP_WORDS
+            ]
+            if tokens:
+                try:
+                    validated = locator.validate_symbols(tokens)  # list[dict]
+                    symbol_ids = [v["symbol_id"] for v in validated if v.get("symbol_id")]
+                    code_regions = _regions_from_symbol_ids(symbol_ids[:5], db, description)
+                    if code_regions:
+                        matched = [v["matched_symbol"] for v in validated[:3]]
+                        logger.info(
+                            "[ingest] stage2 fuzzy grounded '%s' → %s",
+                            description[:60], matched,
+                        )
+                except Exception as exc:
+                    logger.warning("[ingest] fuzzy token match failed: %s", exc)
 
-        file_path = top["file_path"]
-        symbols = db.lookup_by_file(file_path)
-        if not symbols:
+        if code_regions:
+            resolved.append({**mapping, "code_regions": code_regions})
+        else:
+            logger.debug("[ingest] no grounding found for: %s", description[:60])
             resolved.append(mapping)
-            continue
-
-        code_regions = [
-            {
-                "symbol": row["qualified_name"] or row["name"],
-                "file_path": row["file_path"],
-                "start_line": row["start_line"],
-                "end_line": row["end_line"],
-                "type": row["type"],
-                "purpose": description,
-            }
-            for row in symbols[:5]  # cap at 5 symbols per file
-        ]
-        logger.info(
-            "[ingest] auto-grounded '%s' → %s (%d symbols, score=%.2f)",
-            description[:60], file_path, len(code_regions), top["score"],
-        )
-        resolved.append({**mapping, "code_regions": code_regions})
 
     return resolved
 
