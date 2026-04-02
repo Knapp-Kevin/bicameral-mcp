@@ -449,10 +449,16 @@ async def test_gap07_ingest_response_has_no_grounding_deferred_field(tmp_path, m
     monkeypatch.setenv("REPO_PATH", repo)
     monkeypatch.delenv("CODE_LOCATOR_SQLITE_DB", raising=False)
 
+    # Force the setup block in _auto_ground_via_search to raise by making
+    # get_code_locator unavailable — this is the realistic "locator not installed" case.
+    import adapters.code_locator as _cl_mod
+    monkeypatch.setattr(_cl_mod, "get_code_locator", lambda: (_ for _ in ()).throw(ImportError("locator not available")))
+
     result = await handle_ingest(_payload("payment logic", repo))
 
     from contracts import IngestStats
-    has_field = hasattr(IngestStats, "grounding_deferred") or hasattr(IngestStats.model_fields, "grounding_deferred") if hasattr(IngestStats, "model_fields") else False
+    # Pydantic v2: field presence is in model_fields dict
+    has_field = "grounding_deferred" in (IngestStats.model_fields or {})
 
     if not has_field:
         pytest.xfail(
@@ -460,6 +466,11 @@ async def test_gap07_ingest_response_has_no_grounding_deferred_field(tmp_path, m
             "Callers cannot distinguish 'no match' from 'index not built'. "
             "Fix: add grounding_deferred: int = 0 to IngestStats and contracts."
         )
+
+    # Field exists — verify it is populated correctly when the index is absent
+    assert result.stats.grounding_deferred == 1, (
+        f"Expected grounding_deferred=1 (index missing), got {result.stats.grounding_deferred}"
+    )
 
 
 # ── GAP-08: symbols[] partially resolves, missing names silently dropped ─

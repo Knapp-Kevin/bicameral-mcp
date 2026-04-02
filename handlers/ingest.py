@@ -55,8 +55,8 @@ def _regions_from_symbol_ids(symbol_ids: list[int], db, description: str) -> lis
     return regions
 
 
-def _auto_ground_via_search(mappings: list[dict], repo: str) -> list[dict]:
-    """Auto-ground mappings with no code_regions and no symbols.
+def _auto_ground_via_search(mappings: list[dict], repo: str) -> tuple[list[dict], int]:
+    """Auto-ground mappings with no code_regions.
 
     Two-stage approach:
     1. BM25 search on full description → top file → expand to symbols (fast,
@@ -67,6 +67,12 @@ def _auto_ground_via_search(mappings: list[dict], repo: str) -> list[dict]:
 
     Stage 2 is the preliminary semantic grounding path that works without
     Silong's RAG eval / threshold calibration.
+
+    Returns:
+        (resolved_mappings, grounding_deferred_count) — grounding_deferred_count
+        is > 0 when the index was unavailable and grounding was skipped entirely.
+        The caller should surface this so the user knows to rebuild the index and
+        re-ingest.
     """
     db_path = os.getenv("CODE_LOCATOR_SQLITE_DB", "")
     if not db_path:
@@ -79,11 +85,16 @@ def _auto_ground_via_search(mappings: list[dict], repo: str) -> list[dict]:
         db = SymbolDB(db_path)
     except Exception as exc:
         logger.warning("[ingest] auto-ground unavailable: %s", exc)
-        return mappings
+        # Count how many mappings would have been candidates for grounding
+        deferred = sum(1 for m in mappings if not m.get("code_regions"))
+        return mappings, deferred
 
     resolved = []
     for mapping in mappings:
-        if mapping.get("code_regions") or mapping.get("symbols"):
+        # Only skip mappings that are already grounded (have code_regions).
+        # Mappings with symbols[] but empty code_regions are NOT grounded —
+        # _resolve_symbols_to_regions may have failed; let BM25/fuzzy take over.
+        if mapping.get("code_regions"):
             resolved.append(mapping)
             continue
 
@@ -145,7 +156,7 @@ def _auto_ground_via_search(mappings: list[dict], repo: str) -> list[dict]:
             logger.debug("[ingest] no grounding found for: %s", description[:60])
             resolved.append(mapping)
 
-    return resolved
+    return resolved, 0
 
 
 def _resolve_symbols_to_regions(payload: dict, repo: str) -> dict:
@@ -181,7 +192,11 @@ def _resolve_symbols_to_regions(payload: dict, repo: str) -> dict:
 
         if symbol_names and not code_regions:
             for name in symbol_names:
-                rows = db.lookup_by_name(name)
+                try:
+                    rows = db.lookup_by_name(name)
+                except Exception as exc:
+                    logger.warning("[ingest] lookup_by_name failed for '%s': %s", name, exc)
+                    rows = []
                 for row in rows:
                     code_regions.append({
                         "symbol": row["qualified_name"] or row["name"],
@@ -219,7 +234,7 @@ async def handle_ingest(
 
     repo = str(payload.get("repo") or os.getenv("REPO_PATH", "."))
     payload = _resolve_symbols_to_regions(payload, repo)
-    mappings = _auto_ground_via_search(payload.get("mappings") or [], repo)
+    mappings, grounding_deferred = _auto_ground_via_search(payload.get("mappings") or [], repo)
     payload = {**payload, "mappings": mappings}
     result = await ledger.ingest_payload(payload)
 
@@ -254,6 +269,7 @@ async def handle_ingest(
             symbols_mapped=int(stats.get("symbols_mapped", 0)),
             regions_linked=int(stats.get("regions_linked", 0)),
             ungrounded=int(stats.get("ungrounded", 0)),
+            grounding_deferred=grounding_deferred,
         ),
         ungrounded_intents=list(result.get("ungrounded_intents", [])),
         source_cursor=cursor_summary,

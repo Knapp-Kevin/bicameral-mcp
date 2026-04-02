@@ -39,7 +39,11 @@ from handlers.link_commit import handle_link_commit
 from handlers.search_decisions import handle_search_decisions
 
 SERVER_NAME = "bicameral-mcp"
-SERVER_VERSION = "0.1.0"
+try:
+    from importlib.metadata import version as _pkg_version
+    SERVER_VERSION = _pkg_version("bicameral-mcp")
+except Exception:
+    SERVER_VERSION = "0.1.0"
 EXPECTED_TOOL_NAMES = [
     "bicameral.status",
     "bicameral.search",

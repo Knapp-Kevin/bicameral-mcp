@@ -127,6 +127,7 @@ class IngestStats(BaseModel):
     symbols_mapped: int
     regions_linked: int
     ungrounded: int
+    grounding_deferred: int = 0  # index not ready at ingest time — re-ingest after build_index
 
 
 class IngestResponse(BaseModel):
