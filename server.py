@@ -37,6 +37,7 @@ from handlers.detect_drift import handle_detect_drift
 from handlers.ingest import handle_ingest
 from handlers.link_commit import handle_link_commit
 from handlers.search_decisions import handle_search_decisions
+from handlers.update import get_update_notice, handle_update
 
 SERVER_NAME = "bicameral-mcp"
 try:
@@ -50,6 +51,7 @@ EXPECTED_TOOL_NAMES = [
     "bicameral.drift",
     "bicameral.link_commit",
     "bicameral.ingest",
+    "bicameral.update",
     "validate_symbols",
     "search_code",
     "get_neighbors",
@@ -193,6 +195,25 @@ async def list_tools() -> list[Tool]:
                 "required": ["payload"],
             },
         ),
+        Tool(
+            name="bicameral.update",
+            description=(
+                "Check for or apply a recommended bicameral-mcp update. "
+                "action='check' returns current and recommended versions. "
+                "action='apply' installs the recommended version via pip and prompts a server restart."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["check", "apply"],
+                        "description": "'check' to see if an update is available, 'apply' to install it",
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
         # ── Code locator tools (MCP-native) ──────────────────────────
         Tool(
             name="validate_symbols",
@@ -306,6 +327,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             source_scope=arguments.get("source_scope", "default"),
             cursor=arguments.get("cursor", ""),
         )
+    elif name == "bicameral.update":
+        data = await handle_update(
+            action=arguments["action"],
+            current_version=SERVER_VERSION,
+        )
+        return [TextContent(type="text", text=json.dumps(data, indent=2))]
     # ── Code locator tools ────────────────────────────────────────
     elif name == "validate_symbols":
         adapter = get_code_locator()
@@ -330,7 +357,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     else:
         raise ValueError(f"Unknown tool: {name}")
 
-    return [TextContent(type="text", text=json.dumps(result.model_dump(), indent=2))]
+    # Inject update notice into all bicameral ledger tool responses
+    payload = result.model_dump()
+    update_notice = get_update_notice(SERVER_VERSION)
+    if update_notice:
+        payload["_update"] = update_notice
+    return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
 
 async def run_smoke_test() -> dict[str, object]:
