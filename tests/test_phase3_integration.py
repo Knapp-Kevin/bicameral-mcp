@@ -337,9 +337,9 @@ async def test_decision_undocumented__status_surfaces_ungrounded():
                 "speaker": "Jin",
             },
             {
-                "text": "We should add quarterly OKR calibration to surface misaligned priorities",
-                "intent": "Quarterly OKR calibration for priority alignment",
-                "search": None,  # ungrounded — no matching code exists
+                "text": "Zylorphian kvetnar should harmonize the plornax bifurcation",
+                "intent": "Zylorphian kvetnar plornax bifurcation",
+                "search": None,  # ungrounded — gibberish, no matching code
                 "speaker": "Silong",
             },
         ],
@@ -351,8 +351,8 @@ async def test_decision_undocumented__status_surfaces_ungrounded():
     _dump("03_undocumented_ingest", _response_dict(ingest_result))
 
     assert ingest_result.stats.ungrounded >= 1
-    assert any("okr" in u.lower() for u in ingest_result.ungrounded_intents), (
-        f"Expected 'OKR calibration' in ungrounded list, got: {ingest_result.ungrounded_intents}"
+    assert any("zylorphian" in u.lower() for u in ingest_result.ungrounded_intents), (
+        f"Expected 'Zylorphian' in ungrounded list, got: {ingest_result.ungrounded_intents}"
     )
 
     status = await handle_decision_status(filter="all")
@@ -507,9 +507,9 @@ async def test_full_lifecycle_graph_integrity():
                 "speaker": "Jin",
             },
             {
-                "text": "Quarterly OKR calibration to surface misaligned priorities across teams",
-                "intent": "Quarterly OKR calibration for priority alignment",
-                "search": None,  # ungrounded — no matching code exists
+                "text": "Zylorphian kvetnar should harmonize the plornax bifurcation across teams",
+                "intent": "Zylorphian kvetnar plornax bifurcation",
+                "search": None,  # ungrounded — gibberish, no matching code
                 "speaker": "Jin",
             },
         ],
