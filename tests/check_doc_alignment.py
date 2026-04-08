@@ -13,12 +13,14 @@ Exit 0 = aligned, Exit 1 = discrepancies found.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
 
 MCP_ROOT = Path(__file__).resolve().parent.parent
-VISUAL_PLAN = MCP_ROOT / "visual-plan" / "plans" / "bicameral-mcp-system.html"
+REPO_ROOT = Path(os.environ.get("REPO_ROOT", MCP_ROOT.parent.parent))
+VISUAL_PLAN = REPO_ROOT / "visual-plans" / "bicameral-mcp-system.html"
 
 errors: list[str] = []
 
