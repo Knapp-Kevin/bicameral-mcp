@@ -3,7 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/bicameral-mcp)](https://pypi.org/project/bicameral-mcp/)
 [![Python](https://img.shields.io/pypi/pyversions/bicameral-mcp)](https://pypi.org/project/bicameral-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://img.shields.io/github/actions/workflow/status/MythologIQ/bicameral-mcp/test-mcp-regression.yml?branch=main&label=tests)](https://github.com/MythologIQ/bicameral-mcp/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/BicameralAI/bicameral-mcp/test-mcp-regression.yml?branch=main&label=tests)](https://github.com/BicameralAI/bicameral-mcp/actions)
 
 **A provenance-aware decision layer for your codebase** -- paste a transcript, get a living map of what was decided and what was actually built.
 
@@ -489,7 +489,7 @@ Where Bicameral today maps `intent --> symbol_name --> file:line`, CodeGenome wi
 Contributions are welcome. To get started:
 
 ```bash
-git clone https://github.com/MythologIQ/bicameral-mcp.git
+git clone https://github.com/BicameralAI/bicameral-mcp.git
 cd bicameral-mcp
 pip install -e ".[test]"
 pytest tests/ -v
