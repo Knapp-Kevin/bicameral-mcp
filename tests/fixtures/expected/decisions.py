@@ -22,9 +22,8 @@ MEDUSA_PAYMENT_TIMEOUT = [
         "source_ref": "medusa-payment-timeout",
         "keywords": ["payment timeout", "authorize call", "12 second", "requires_more", "checkout timeout"],
         "expected_symbols": [
-            "AbstractPaymentProcessor.authorize",
-            "CartCompletionStrategy",
             "PaymentProviderService",
+            "CartCompletionStrategy",
         ],
         "expected_file_patterns": ["payment", "checkout", "cart"],
         "prd_failure_mode": "CONSTRAINT_LOST",  # Rate limit / timeout ceiling is a hard constraint
@@ -36,7 +35,7 @@ MEDUSA_PAYMENT_TIMEOUT = [
         "keywords": ["sweeper job", "pending payment session", "void", "5 minutes", "job scheduler"],
         "expected_symbols": [
             "JobSchedulerService",
-            "AbstractPaymentProcessor.cancel",
+            "PaymentProviderService",
             "PaymentSessionService",
         ],
         "expected_file_patterns": ["payment", "job", "scheduler"],
@@ -61,7 +60,6 @@ MEDUSA_PAYMENT_TIMEOUT = [
         "keywords": ["validate provider response", "community provider", "undefined response", "typed error", "authorize response"],
         "expected_symbols": [
             "PaymentProviderService",
-            "AbstractPaymentProcessor",
         ],
         "expected_file_patterns": ["payment"],
         "prd_failure_mode": "CONSTRAINT_LOST",
@@ -354,7 +352,7 @@ VENDURE_CUSTOM_FIELDS = [
         "source_ref": "vendure-custom-fields",
         "keywords": ["struct custom field", "simple-json", "no SQL indexing", "nested field warning"],
         "expected_symbols": [],
-        "expected_file_patterns": [],
+        "expected_file_patterns": ["custom-field"],
         "prd_failure_mode": "TRIBAL_KNOWLEDGE",
         "adversarial_type": "negation",  # "If you need to filter... don't use struct"
         "status_at_ingest": "ungrounded",
@@ -389,10 +387,10 @@ VENDURE_SEARCH = [
         "description": "Performance targets: reindex p95 search latency under 200ms (was 800ms during reindex), database CPU under 50% during full reindex",
         "source_ref": "vendure-search-reindexing",
         "keywords": ["search latency 200ms", "database CPU reindex", "p95 latency", "reindex performance"],
-        "expected_symbols": [],
-        "expected_file_patterns": [],
+        "expected_symbols": ["DefaultSearchPlugin"],
+        "expected_file_patterns": ["search-plugin", "search-strategy", "reindex"],
         "prd_failure_mode": "CONSTRAINT_LOST",
-        "status_at_ingest": "ungrounded",  # Performance targets have no direct code mapping
+        "status_at_ingest": "ungrounded",  # Performance targets — code exists but decision is aspirational
     },
 ]
 
