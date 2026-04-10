@@ -83,7 +83,8 @@ _TABLES = [
     "DEFINE FIELD speakers       ON source_span TYPE array DEFAULT []",
     "DEFINE FIELD meeting_date   ON source_span TYPE string DEFAULT ''",
     "DEFINE FIELD created_at     ON source_span TYPE datetime DEFAULT time::now()",
-    "DEFINE INDEX idx_span_ref   ON source_span FIELDS source_type, source_ref",
+    "DEFINE INDEX idx_span_ref    ON source_span FIELDS source_type, source_ref",
+    "DEFINE INDEX idx_span_dedup  ON source_span FIELDS source_type, source_ref, text UNIQUE",
 
     # vocab_cache — fast repeated query→symbols lookups
     "DEFINE TABLE vocab_cache SCHEMAFULL",

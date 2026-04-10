@@ -468,8 +468,8 @@ async def upsert_source_span(
     if rows:
         return str(rows[0].get("id", ""))
     rows = await client.query(
-        "CREATE source_span SET text=$t, source_type=$st, source_ref=$sr",
-        {"t": text, "st": source_type, "sr": source_ref},
+        "CREATE source_span SET text=$t, source_type=$st, source_ref=$sr, speakers=$sp, meeting_date=$md",
+        {"t": text, "st": source_type, "sr": source_ref, "sp": list(speakers), "md": meeting_date},
     )
     return str(rows[0].get("id", "")) if rows else ""
 
@@ -522,7 +522,7 @@ async def get_regions_for_files(
         SELECT
             type::string(id) AS region_id,
             file_path, symbol_name, start_line, end_line, content_hash,
-            <-implements<-symbol<-maps_to<-intent.{id, status} AS intents
+            <-implements<-symbol<-maps_to<-intent.{id, status, description} AS intents
         FROM code_region
         WHERE file_path IN $fps
         """,

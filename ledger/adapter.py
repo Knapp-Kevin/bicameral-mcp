@@ -176,6 +176,15 @@ class SurrealDBLedgerAdapter:
             end_line = region.get("end_line", 0)
             stored_hash = region.get("content_hash", "")
 
+            # Collect source context from linked intents for L3 drift analysis.
+            # L1 (hash) ignores this; L3 (semantic) will use it to evaluate compliance.
+            intent_descriptions = [
+                i.get("description", "")
+                for i in (region.get("intents") or [])
+                if i and i.get("description")
+            ]
+            source_context = " | ".join(intent_descriptions)
+
             # Delegate drift analysis to the port implementation
             drift_result = await drift_analyzer.analyze_region(
                 file_path=file_path,
@@ -185,6 +194,7 @@ class SurrealDBLedgerAdapter:
                 stored_hash=stored_hash,
                 repo_path=repo_path,
                 ref=commit_hash,
+                source_context=source_context,
             )
 
             new_status = drift_result.status
