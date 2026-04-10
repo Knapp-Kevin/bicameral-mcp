@@ -58,6 +58,18 @@ _TABLES = [
     "DEFINE INDEX idx_region_sym  ON code_region FIELDS symbol_name",
     "DEFINE INDEX idx_region_file ON code_region FIELDS repo, file_path",
 
+    # source_span — raw text excerpt from a meeting, PRD, or Slack message
+    # Separates "what was said" (source_span) from "what was decided" (intent)
+    # so that drift Layer 3 (LLM compliance) can evaluate against original context.
+    "DEFINE TABLE source_span SCHEMAFULL",
+    "DEFINE FIELD text           ON source_span TYPE string",
+    "DEFINE FIELD source_type    ON source_span TYPE string",       # transcript | notion | slack | manual
+    "DEFINE FIELD source_ref     ON source_span TYPE string DEFAULT ''",  # meeting ID, page URL, etc.
+    "DEFINE FIELD speakers       ON source_span TYPE array DEFAULT []",
+    "DEFINE FIELD meeting_date   ON source_span TYPE string DEFAULT ''",
+    "DEFINE FIELD created_at     ON source_span TYPE datetime DEFAULT time::now()",
+    "DEFINE INDEX idx_span_ref   ON source_span FIELDS source_type, source_ref",
+
     # vocab_cache — fast repeated query→symbols lookups
     "DEFINE TABLE vocab_cache SCHEMAFULL",
     "DEFINE FIELD query_text     ON vocab_cache TYPE string",
@@ -90,6 +102,10 @@ _TABLES = [
 
 # Edge tables
 _EDGES = [
+    # source_span → intent (extraction provenance)
+    "DEFINE TABLE yields SCHEMAFULL TYPE RELATION IN source_span OUT intent",
+    "DEFINE FIELD created_at ON yields TYPE datetime DEFAULT time::now()",
+
     # intent → symbol (vocabulary bridge)
     "DEFINE TABLE maps_to SCHEMAFULL TYPE RELATION IN intent OUT symbol",
     "DEFINE FIELD confidence ON maps_to TYPE float ASSERT $value >= 0 AND $value <= 1",
