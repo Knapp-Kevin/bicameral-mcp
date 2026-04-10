@@ -36,7 +36,7 @@ from .queries import (
     upsert_symbol,
     upsert_sync_state,
 )
-from .schema import init_schema
+from .schema import init_schema, migrate
 from .status import compute_content_hash, get_changed_files, resolve_head
 
 logger = logging.getLogger(__name__)
@@ -70,10 +70,11 @@ class SurrealDBLedgerAdapter:
         self._connected = False
 
     async def connect(self) -> None:
-        """Connect and initialize schema (idempotent)."""
+        """Connect, initialize schema, and run migrations (idempotent)."""
         if not self._connected:
             await self._client.connect()
             await init_schema(self._client)
+            await migrate(self._client)
             self._connected = True
             logger.info("[ledger] SurrealDBLedgerAdapter ready at %s", self._url)
 

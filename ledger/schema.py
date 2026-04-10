@@ -4,11 +4,26 @@ Targets SurrealDB 2.x embedded via Python SDK (surrealdb>=1.0.0).
 Uses SEARCH ANALYZER syntax (v2 compatible, not FULLTEXT ANALYZER which is v3+).
 
 To initialise: await init_schema(client)
+Schema migrations: await migrate(client)
 """
 
 from __future__ import annotations
 
+import logging
+
 from .client import LedgerClient
+
+logger = logging.getLogger(__name__)
+
+# ── Schema version ──────────────────────────────────────────────────────
+# Bump this when the schema changes. Each version gets a migration function
+# in _MIGRATIONS. Non-breaking additions (new tables/fields) don't need a
+# version bump — DEFINE is idempotent. Bump only for:
+#   - Field type changes
+#   - Constraint changes
+#   - Table removals
+#   - Anything that would break existing data
+SCHEMA_VERSION = 1
 
 # Analyzers
 _ANALYZERS = [
@@ -125,7 +140,92 @@ _EDGES = [
 ]
 
 
+# Schema version tracking
+_META = [
+    "DEFINE TABLE schema_meta SCHEMAFULL",
+    "DEFINE FIELD version     ON schema_meta TYPE int",
+    "DEFINE FIELD migrated_at ON schema_meta TYPE datetime DEFAULT time::now()",
+]
+
+
 async def init_schema(client: LedgerClient) -> None:
     """Create all tables, indexes, and analyzers. Idempotent (DEFINE is safe to re-run)."""
-    all_statements = _ANALYZERS + _TABLES + _EDGES
+    all_statements = _ANALYZERS + _TABLES + _EDGES + _META
     await client.execute_many(all_statements)
+
+
+# ── Migrations ──────────────────────────────────────────────────────────
+# Each migration brings the DB from version N-1 to N.
+# Non-breaking migrations (new tables/fields) just stamp the version.
+# Breaking migrations clear affected tables and log a warning.
+#
+# Once Phase 1 (event-sourced collaboration) ships, breaking migrations
+# become lossless: drop local DB → re-materialize from git events.
+
+
+async def _migrate_v0_to_v1(client: LedgerClient) -> None:
+    """v0 → v1: Add source_span table + yields edge + port interfaces.
+
+    Non-breaking: init_schema() already created the new tables via DEFINE.
+    This migration just stamps the version.
+    """
+    logger.info("[migration] v0 → v1: source_span table + yields edge (non-breaking)")
+
+
+# Registry: version → migration function that brings DB from version-1 to version
+_MIGRATIONS: dict[int, ...] = {
+    1: _migrate_v0_to_v1,
+}
+
+
+async def _get_schema_version(client: LedgerClient) -> int:
+    """Read current schema version from DB. Returns 0 if no version tracked."""
+    rows = await client.query("SELECT version FROM schema_meta LIMIT 1")
+    if rows and rows[0].get("version") is not None:
+        return int(rows[0]["version"])
+    return 0
+
+
+async def _set_schema_version(client: LedgerClient, version: int) -> None:
+    """Upsert the schema version in schema_meta."""
+    await client.execute(
+        "DELETE FROM schema_meta",
+    )
+    await client.execute(
+        "CREATE schema_meta SET version = $v, migrated_at = time::now()",
+        {"v": version},
+    )
+
+
+async def migrate(client: LedgerClient) -> None:
+    """Run any pending migrations to bring the DB up to SCHEMA_VERSION.
+
+    Called after init_schema() in adapter.connect(). Safe to call repeatedly.
+    """
+    current = await _get_schema_version(client)
+
+    if current == SCHEMA_VERSION:
+        return
+
+    if current > SCHEMA_VERSION:
+        logger.warning(
+            "[migration] DB schema version %d is newer than code version %d. "
+            "You may be running an older version of bicameral-mcp.",
+            current, SCHEMA_VERSION,
+        )
+        return
+
+    logger.info(
+        "[migration] Schema version %d → %d (%d migration(s) to apply)",
+        current, SCHEMA_VERSION, SCHEMA_VERSION - current,
+    )
+
+    for target_version in range(current + 1, SCHEMA_VERSION + 1):
+        fn = _MIGRATIONS.get(target_version)
+        if fn is None:
+            logger.warning("[migration] No migration function for version %d", target_version)
+            continue
+        await fn(client)
+        await _set_schema_version(client, target_version)
+
+    logger.info("[migration] Schema migrated to version %d", SCHEMA_VERSION)
