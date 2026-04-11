@@ -31,7 +31,14 @@ def repo_path() -> str:
 
 @pytest.fixture
 def surreal_url() -> str:
-    return os.getenv("SURREAL_URL", "ws://localhost:8001")
+    return os.getenv("SURREAL_URL", "memory://")
+
+
+@pytest.fixture
+def ctx():
+    """Build a BicameralContext from current env (SURREAL_URL, REPO_PATH)."""
+    from context import BicameralContext
+    return BicameralContext.from_env()
 
 
 @pytest.fixture
