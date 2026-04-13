@@ -42,28 +42,70 @@ CACHE_DIR = Path(__file__).resolve().parent / ".extract-cache"
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
-MAX_OUTPUT_TOKENS = 4096
+MAX_OUTPUT_TOKENS = 8192
 REQUEST_TIMEOUT_S = 120.0
+
+# ── Tool-use schema ────────────────────────────────────────────────
+# We use Anthropic tool use to force structured output. The model is
+# required to call this tool (via tool_choice) and the response is a
+# pre-parsed Python dict — no JSON string parsing on the hot path,
+# no unescaped-quote failures, no markdown-fence drift.
+EXTRACTION_TOOL = {
+    "name": "submit_extraction",
+    "description": (
+        "Submit the decisions and action items extracted from the transcript. "
+        "Must be called exactly once. If nothing qualifies, call with empty arrays."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "decisions": {
+                "type": "array",
+                "description": (
+                    "Implementation-relevant decisions from the transcript. "
+                    "One object per decision. Include architectural choices, "
+                    "API contracts, data model decisions, technology choices, "
+                    "and behavioral requirements."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {
+                            "type": "string",
+                            "description": "A single self-contained sentence describing the decision.",
+                        }
+                    },
+                    "required": ["description"],
+                },
+            },
+            "action_items": {
+                "type": "array",
+                "description": "Action items with code implications. Owner may be null if not named.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "owner": {"type": ["string", "null"]},
+                    },
+                    "required": ["text"],
+                },
+            },
+        },
+        "required": ["decisions", "action_items"],
+    },
+}
 
 SYSTEM_PROMPT_TEMPLATE = """\
 You are the extraction stage of the Bicameral ingest skill. Apply the rules
-below literally. Return STRICT JSON matching this exact shape and nothing else:
-
-{{"decisions": [{{"description": "..."}}], "action_items": [{{"text": "...", "owner": null}}]}}
+below literally, then call the `submit_extraction` tool exactly once with
+the extracted decisions and action items.
 
 Rules to apply (from SKILL.md, Step 1 — Extract candidate decisions):
 
 {skill_excerpt}
 
-Hard constraints:
-- Output ONLY the JSON object. No prose, no markdown fences, no commentary.
-- `decisions` contains implementation-relevant decisions (architectural, API
-  contract, data model, technology choice, behavioral requirement, action
-  item with code implications). One object per decision. `description` must
-  be a single self-contained sentence.
-- `action_items` contains tasks with explicit owners. `owner` may be null
-  if no owner was named.
-- If nothing qualifies, return {{"decisions": [], "action_items": []}}.
+Reminder: call `submit_extraction` exactly once. Decisions must be
+implementation-relevant per the rules above. When in doubt, exclude.
 """
 
 USER_PROMPT_TEMPLATE = """\
@@ -73,7 +115,7 @@ Transcript source_ref: {source_ref}
 {transcript}
 </transcript>
 
-Extract the decisions now. Return only the JSON object.
+Extract the decisions now and call `submit_extraction`.
 """
 
 
@@ -138,15 +180,17 @@ def _call_messages_api(
     system_prompt: str,
     user_prompt: str,
     api_key: str,
-) -> str:
-    """POST to Anthropic Messages API. Returns the concatenated text content.
+) -> dict:
+    """POST to Anthropic Messages API with forced tool-use.
+
+    Returns the `input` dict from the model's `submit_extraction` tool call,
+    which is a pre-parsed structured object — no JSON string parsing needed.
 
     On HTTP error, raises RuntimeError with the response body included so the
     CI log shows the exact Anthropic error. We never log the key itself —
-    only its length and first 12 chars (prefix is enough to distinguish
-    sk-ant-api03 from other token shapes without leaking material).
+    only its length and first 12 chars.
     """
-    token_kind = api_key[:12] if api_key else "(empty)"
+    key_prefix = api_key[:12] if api_key else "(empty)"
     headers = {
         "anthropic-version": ANTHROPIC_API_VERSION,
         "content-type": "application/json",
@@ -165,22 +209,45 @@ def _call_messages_api(
             }
         ],
         "messages": [{"role": "user", "content": user_prompt}],
+        "tools": [EXTRACTION_TOOL],
+        "tool_choice": {"type": "tool", "name": "submit_extraction"},
     }
     with httpx.Client(timeout=REQUEST_TIMEOUT_S) as client:
         resp = client.post(ANTHROPIC_API_URL, headers=headers, json=payload)
         if resp.status_code >= 400:
             raise RuntimeError(
                 f"Anthropic API error {resp.status_code}: {resp.text[:500]} "
-                f"(model={model}, key_prefix={token_kind}..., "
+                f"(model={model}, key_prefix={key_prefix}..., "
                 f"key_len={len(api_key)})"
             )
         data = resp.json()
 
-    parts = data.get("content") or []
-    text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
-    if not text:
-        raise RuntimeError(f"Anthropic API returned no text content: {data}")
-    return text
+    stop_reason = data.get("stop_reason", "")
+    content = data.get("content") or []
+    tool_use = next((b for b in content if b.get("type") == "tool_use"), None)
+    if tool_use is None:
+        # The model responded with text instead of calling the tool — this
+        # can happen if tool_choice gets ignored. Emit what we got so the
+        # CI log is diagnostic rather than opaque.
+        text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+        raise RuntimeError(
+            f"Anthropic response missing tool_use block "
+            f"(stop_reason={stop_reason!r}, text={'|'.join(text_parts)[:300]!r})"
+        )
+
+    if stop_reason == "max_tokens":
+        raise RuntimeError(
+            f"Anthropic response hit max_tokens={MAX_OUTPUT_TOKENS} — "
+            f"bump MAX_OUTPUT_TOKENS or break the transcript into chunks"
+        )
+
+    extracted = tool_use.get("input")
+    if not isinstance(extracted, dict):
+        raise RuntimeError(f"tool_use input is not a dict: {extracted!r}")
+    # Defensive defaults — tool schema requires these but belt-and-braces.
+    extracted.setdefault("decisions", [])
+    extracted.setdefault("action_items", [])
+    return extracted
 
 
 def extract_from_current_skill(
@@ -232,13 +299,12 @@ def extract_from_current_skill(
         transcript=transcript,
     )
 
-    body = _call_messages_api(
+    parsed = _call_messages_api(
         model=chosen_model,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         api_key=chosen_key,
     )
-    parsed = _parse_response_json(body)
 
     if use_cache:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
