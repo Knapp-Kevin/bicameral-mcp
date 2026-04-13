@@ -81,9 +81,15 @@ def _build_payload_from_fixture(source_ref: str) -> dict:
     }
 
 
-def _build_payload_from_skill_md(transcript_text: str, source_ref: str) -> dict:
+def _build_payload_from_skill_md(
+    transcript_text: str, source_ref: str
+) -> tuple[dict, list[dict]]:
     """Call the headless extraction driver (Step 1 of the current SKILL.md)
-    and shape the result as a natural-format ingest payload."""
+    and shape the result as a natural-format ingest payload.
+
+    Returns ``(payload, extracted_decisions)`` so the caller can also compute
+    extraction precision/recall against a pregenerated ground-truth fixture.
+    """
     # tests/ has no __init__.py; import as a sibling module via the dir on sys.path.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from _extract_headless import extract_from_current_skill  # type: ignore[import-not-found]
@@ -98,16 +104,18 @@ def _build_payload_from_skill_md(transcript_text: str, source_ref: str) -> dict:
         if d.get("description")
     ]
     action_items = [
-        {"text": a.get("text", ""), "owner": a.get("owner")}
+        # IngestPayload contract requires owner: str — coerce None/missing → ""
+        {"text": a.get("text", ""), "owner": a.get("owner") or ""}
         for a in (extracted.get("action_items") or [])
         if a.get("text")
     ]
-    return {
+    payload = {
         "source": "transcript",
         "title": source_ref,
         "decisions": decisions,
         "action_items": action_items,
     }
+    return payload, decisions
 
 
 async def _ingest_one(
@@ -119,10 +127,20 @@ async def _ingest_one(
     """Run a single transcript through handle_ingest and return per-decision rows."""
     from handlers.ingest import handle_ingest
 
+    # tests/ has no __init__.py; import metrics helper as sibling module.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _extraction_metrics import (  # type: ignore[import-not-found]
+        compute_extraction_metrics,
+        load_fixture,
+    )
+
+    extracted_decisions: list[dict] = []
     if skill_variant == "none":
         payload = _build_payload_from_fixture(source_ref)
     elif skill_variant == "from-skill-md":
-        payload = _build_payload_from_skill_md(transcript_text, source_ref)
+        payload, extracted_decisions = _build_payload_from_skill_md(
+            transcript_text, source_ref
+        )
     else:
         raise ValueError(f"unknown skill-variant: {skill_variant!r}")
 
@@ -132,7 +150,18 @@ async def _ingest_one(
     result = await handle_ingest(ctx, payload)
     stats = result.stats
 
-    fixture = {d["description"]: d for d in _decisions_for_source_ref(source_ref)}
+    m2_fixture_size = len(_decisions_for_source_ref(source_ref))
+
+    # Extraction precision/recall vs pregenerated ground truth (only meaningful
+    # for --skill-variant from-skill-md; the "none" variant uses the fixture as
+    # its input, so comparing it against itself would be tautological).
+    if skill_variant == "from-skill-md":
+        ground_truth = load_fixture(source_ref)
+        extraction_metrics = compute_extraction_metrics(
+            extracted_decisions, ground_truth
+        )
+    else:
+        extraction_metrics = {"skipped": True, "reason": "not applicable in this variant"}
 
     return {
         "source_ref": source_ref,
@@ -142,7 +171,8 @@ async def _ingest_one(
         "grounded_pct": round(stats.grounded_pct, 4),
         "grounding_deferred": stats.grounding_deferred,
         "ungrounded_intents": list(result.ungrounded_intents),
-        "fixture_size": len(fixture),
+        "m2_fixture_size": m2_fixture_size,
+        "extraction_metrics": extraction_metrics,
     }
 
 
@@ -184,6 +214,9 @@ async def _run_repo(
                 f"grounded ({row['grounded_pct']:.0%})"
             )
 
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _extraction_metrics import aggregate_extraction_metrics  # type: ignore[import-not-found]
+
     totals = {
         "intents_created": sum(r["intents_created"] for r in per_transcript),
         "grounded": sum(r["grounded"] for r in per_transcript),
@@ -194,11 +227,16 @@ async def _run_repo(
         4,
     )
 
+    extraction_aggregate = aggregate_extraction_metrics(
+        [r["extraction_metrics"] for r in per_transcript]
+    )
+
     return {
         "repo_key": repo_key,
         "repo_path": str(Path(repo_path).resolve()),
         "transcripts": per_transcript,
         "totals": totals,
+        "extraction_metrics": extraction_aggregate,
     }
 
 
@@ -246,12 +284,18 @@ async def run(args) -> tuple[dict, int]:
         )
         repo_reports.append(report)
         t = report["totals"]
+        ex = report.get("extraction_metrics", {})
+        extraction_summary = ""
+        if not ex.get("skipped", True):
+            extraction_summary = (
+                f" | extraction P={ex['precision']:.2f} R={ex['recall']:.2f} F1={ex['f1']:.2f}"
+            )
         print(
             f"  [{repo_key}] {t['grounded']}/{t['intents_created']} "
-            f"grounded ({t['grounded_pct']:.0%})"
+            f"grounded ({t['grounded_pct']:.0%}){extraction_summary}"
         )
 
-    # Aggregate.
+    # Aggregate grounding counts.
     total_intents = sum(r["totals"]["intents_created"] for r in repo_reports)
     total_grounded = sum(r["totals"]["grounded"] for r in repo_reports)
     aggregate_pct = (total_grounded / total_intents) if total_intents else 0.0
@@ -259,6 +303,17 @@ async def run(args) -> tuple[dict, int]:
     repo_variance = (
         round(max(per_repo_pcts) - min(per_repo_pcts), 4) if len(per_repo_pcts) > 1 else 0.0
     )
+
+    # Aggregate extraction metrics across all scored transcripts (ignoring
+    # repo boundaries — precision/recall of the skill is a global property).
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _extraction_metrics import aggregate_extraction_metrics  # type: ignore[import-not-found]
+    all_extraction_rows = [
+        t["extraction_metrics"]
+        for r in repo_reports
+        for t in r["transcripts"]
+    ]
+    aggregate_extraction = aggregate_extraction_metrics(all_extraction_rows)
 
     combined = {
         "skill_variant": args.skill_variant,
@@ -271,6 +326,7 @@ async def run(args) -> tuple[dict, int]:
             "per_repo_grounded_pct": {
                 r["repo_key"]: r["totals"]["grounded_pct"] for r in repo_reports
             },
+            "extraction": aggregate_extraction,
         },
         "skipped_source_refs": skipped_source_refs,
     }
@@ -280,6 +336,22 @@ async def run(args) -> tuple[dict, int]:
         f"  aggregate: {total_grounded}/{total_intents} "
         f"grounded ({aggregate_pct:.0%}, variance={repo_variance:.3f})"
     )
+    if not aggregate_extraction.get("skipped", True):
+        print(
+            f"  extraction: P={aggregate_extraction['precision']:.2f} "
+            f"R={aggregate_extraction['recall']:.2f} "
+            f"F1={aggregate_extraction['f1']:.2f} "
+            f"(TP={aggregate_extraction['true_positives']} "
+            f"FP={aggregate_extraction['false_positives']} "
+            f"FN={aggregate_extraction['false_negatives']}, "
+            f"scored={aggregate_extraction['scored_transcripts']}/"
+            f"{sum(len(r['transcripts']) for r in repo_reports)})"
+        )
+    else:
+        print(
+            f"  extraction: skipped ({aggregate_extraction.get('reason', '')}) "
+            f"— no fixtures in tests/fixtures/extraction/"
+        )
 
     # Regression gates.
     exit_code = 0
