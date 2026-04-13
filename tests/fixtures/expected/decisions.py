@@ -419,3 +419,57 @@ ADVERSARIAL = [d for d in ALL_DECISIONS if d.get("adversarial_type")]
 
 # Decisions that should be ungrounded (no code exists yet)
 UNGROUNDED = [d for d in ALL_DECISIONS if d["status_at_ingest"] == "ungrounded"]
+
+
+# ── Transcript discovery map (M1 decision-relevance eval) ────────────
+#
+# Extends ground-truth fixtures into a corpus registry. The M1 runner reads
+# this to discover which transcript file feeds which repo. Add a new entry
+# here to onboard a new transcript — the runner picks it up automatically,
+# no code change required. `transcript` is resolved relative to the repo
+# root (the parent of pilot/mcp).
+#
+# `repo_key` is matched against the --multi-repo JSON the caller passes:
+#   python tests/eval_decision_relevance.py \
+#     --multi-repo '{"medusa": "test-results/.repos/medusa", "bicameral": "."}'
+# Only entries whose repo_key is in the mapping will run in a given
+# invocation, so partial runs are first-class.
+
+TRANSCRIPT_SOURCES: dict[str, dict] = {
+    "medusa-payment-timeout": {
+        "transcript": "pilot/ml/data/transcripts/medusa-payment-timeout.md",
+        "repo_key": "medusa",
+    },
+    "medusa-plugin-migration": {
+        "transcript": "pilot/ml/data/transcripts/medusa-plugin-migration.md",
+        "repo_key": "medusa",
+    },
+    "medusa-webhook-notifications": {
+        "transcript": "pilot/ml/data/transcripts/medusa-webhook-notifications.md",
+        "repo_key": "medusa",
+    },
+    "saleor-checkout-extensibility": {
+        "transcript": "pilot/ml/data/transcripts/saleor-checkout-extensibility.md",
+        "repo_key": "saleor",
+    },
+    "saleor-graphql-permissions": {
+        "transcript": "pilot/ml/data/transcripts/saleor-graphql-permissions.md",
+        "repo_key": "saleor",
+    },
+    "saleor-order-workflows": {
+        "transcript": "pilot/ml/data/transcripts/saleor-order-workflows.md",
+        "repo_key": "saleor",
+    },
+    "vendure-channel-pricing": {
+        "transcript": "pilot/ml/data/transcripts/vendure-channel-pricing.md",
+        "repo_key": "vendure",
+    },
+    "vendure-custom-fields": {
+        "transcript": "pilot/ml/data/transcripts/vendure-custom-fields.md",
+        "repo_key": "vendure",
+    },
+    "vendure-search-reindexing": {
+        "transcript": "pilot/ml/data/transcripts/vendure-search-reindexing.md",
+        "repo_key": "vendure",
+    },
+}

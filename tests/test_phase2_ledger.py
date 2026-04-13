@@ -242,7 +242,14 @@ async def test_decision_status_reflects_ingested_data(monkeypatch, surreal_url, 
 @pytest.mark.phase2
 @pytest.mark.asyncio
 async def test_ungrounded_intent_has_correct_status(monkeypatch, surreal_url):
-    """An intent with no code_regions must appear in filter='ungrounded'."""
+    """An intent with no code_regions must appear in filter='ungrounded'.
+
+    Note: handle_decision_status() triggers lazy re-grounding via link_commit,
+    so the decision text must be gibberish that no BM25 hit can anchor —
+    otherwise the regrounder attaches it to a random symbol and the row
+    exits the ungrounded filter. This is a quirk of exercising the lazy
+    regrounder against a real code index, not a production concern.
+    """
     monkeypatch.setenv("USE_REAL_LEDGER", "1")
     monkeypatch.setenv("SURREAL_URL", surreal_url)
 
@@ -250,7 +257,7 @@ async def test_ungrounded_intent_has_correct_status(monkeypatch, surreal_url):
     if hasattr(ledger, "connect"):
         await ledger.connect()
 
-    desc = "intent with zero code regions for ungrounded test"
+    desc = "zzqx qqzzyy nonsensetoken glarbflumph deliberate-gibberish wlrdpfnz"
     await ledger.ingest_payload({
         "query": desc, "repo": "test-repo", "commit_hash": "unground01",
         "analyzed_at": "2026-03-27T12:00:00Z",
@@ -321,3 +328,66 @@ async def test_source_cursor_upserts_after_ingest(monkeypatch, surreal_url, mini
     assert result.source_cursor.source_scope == "slack:C123"
     assert result.source_cursor.cursor == "1743210021.123"
     assert result.source_cursor.last_source_ref == "test-meeting-001"
+
+
+# ── M1 decision-relevance instrumentation ────────────────────────────
+
+@pytest.mark.phase2
+@pytest.mark.asyncio
+async def test_ingest_stats_populates_grounded_fields(
+    caplog, monkeypatch, surreal_url, minimal_payload
+):
+    """handle_ingest must populate stats.grounded + stats.grounded_pct and
+    emit a [ingest] complete log line. This is the M1 instrumentation gate."""
+    import logging
+    monkeypatch.setenv("USE_REAL_LEDGER", "1")
+    monkeypatch.setenv("SURREAL_URL", surreal_url)
+
+    from handlers.ingest import handle_ingest
+
+    ctx = _ctx()
+    with caplog.at_level(logging.INFO, logger="handlers.ingest"):
+        result = await handle_ingest(ctx, minimal_payload)
+
+    stats = result.stats
+    assert stats.intents_created >= 1
+    assert stats.grounded + stats.ungrounded == stats.intents_created
+    if stats.intents_created > 0:
+        expected_pct = stats.grounded / stats.intents_created
+        assert abs(stats.grounded_pct - expected_pct) < 1e-9
+
+    assert any("[ingest] complete:" in m for m in caplog.messages), (
+        f"expected '[ingest] complete:' log line, got: {caplog.messages}"
+    )
+
+
+@pytest.mark.phase2
+@pytest.mark.asyncio
+async def test_get_grounding_breakdown_groups_by_source_ref(
+    monkeypatch, surreal_url, minimal_payload
+):
+    """get_grounding_breakdown must return one row per distinct source_ref
+    with grounded/ungrounded/total/grounded_pct buckets."""
+    monkeypatch.setenv("USE_REAL_LEDGER", "1")
+    monkeypatch.setenv("SURREAL_URL", surreal_url)
+
+    from handlers.ingest import handle_ingest
+    from ledger.queries import get_grounding_breakdown
+
+    ctx = _ctx()
+    await handle_ingest(ctx, minimal_payload)
+
+    ledger = get_ledger()
+    if hasattr(ledger, "connect"):
+        await ledger.connect()
+    # TeamWriteAdapter wraps SurrealDBLedgerAdapter as _inner; unwrap to reach _client
+    inner = getattr(ledger, "_inner", ledger)
+    client = inner._client
+
+    rows = await get_grounding_breakdown(client)
+    assert isinstance(rows, list)
+    assert len(rows) >= 1
+    row = next((r for r in rows if r["source_ref"] == "test-meeting-001"), None)
+    assert row is not None, f"expected test-meeting-001 row, got {rows}"
+    assert row["total"] == row["grounded"] + row["ungrounded"]
+    assert 0.0 <= row["grounded_pct"] <= 1.0
