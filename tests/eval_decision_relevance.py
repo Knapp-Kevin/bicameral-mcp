@@ -348,10 +348,7 @@ async def run(args) -> tuple[dict, int]:
             f"{sum(len(r['transcripts']) for r in repo_reports)})"
         )
     else:
-        print(
-            f"  extraction: skipped ({aggregate_extraction.get('reason', '')}) "
-            f"— no fixtures in tests/fixtures/extraction/"
-        )
+        print(f"  extraction: skipped ({aggregate_extraction.get('reason', '')})")
 
     # Regression gates.
     exit_code = 0
