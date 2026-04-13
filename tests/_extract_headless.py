@@ -12,8 +12,13 @@ is applied so that re-runs within the same branch only pay for transcript
 tokens after the first call.
 
 Environment:
-    CLAUDE_CODE_OAUTH_TOKEN  required — sent as Authorization: Bearer <token>
-    M1_EVAL_MODEL            default "claude-haiku-4-5-20251001"
+    ANTHROPIC_API_KEY   required — sent as the x-api-key header
+    M1_EVAL_MODEL       default "claude-haiku-4-5-20251001"
+
+Note: we tried Claude Code OAuth tokens (sk-ant-oat01...) via
+Authorization: Bearer but Anthropic's public Messages API rejects
+them with "OAuth authentication is currently not supported" (401).
+Standard API keys (sk-ant-api03...) authenticate via x-api-key.
 """
 from __future__ import annotations
 
@@ -132,21 +137,20 @@ def _call_messages_api(
     model: str,
     system_prompt: str,
     user_prompt: str,
-    oauth_token: str,
+    api_key: str,
 ) -> str:
     """POST to Anthropic Messages API. Returns the concatenated text content.
 
     On HTTP error, raises RuntimeError with the response body included so the
-    CI log shows the exact Anthropic error (e.g. ``invalid_api_key`` vs
-    ``unauthorized_scope``). We never log the token itself — only its length
-    prefix, which is enough to distinguish sk-ant-api03 (API key) from
-    sk-ant-oat01 (OAuth token) without leaking material.
+    CI log shows the exact Anthropic error. We never log the key itself —
+    only its length and first 12 chars (prefix is enough to distinguish
+    sk-ant-api03 from other token shapes without leaking material).
     """
-    token_kind = oauth_token[:12] if oauth_token else "(empty)"
+    token_kind = api_key[:12] if api_key else "(empty)"
     headers = {
         "anthropic-version": ANTHROPIC_API_VERSION,
         "content-type": "application/json",
-        "authorization": f"Bearer {oauth_token}",
+        "x-api-key": api_key,
     }
     payload: dict[str, Any] = {
         "model": model,
@@ -167,8 +171,8 @@ def _call_messages_api(
         if resp.status_code >= 400:
             raise RuntimeError(
                 f"Anthropic API error {resp.status_code}: {resp.text[:500]} "
-                f"(model={model}, token_prefix={token_kind}..., "
-                f"token_len={len(oauth_token)})"
+                f"(model={model}, key_prefix={token_kind}..., "
+                f"key_len={len(api_key)})"
             )
         data = resp.json()
 
@@ -185,7 +189,7 @@ def extract_from_current_skill(
     source_ref: str = "",
     skill_md_path: Path | None = None,
     model: str | None = None,
-    oauth_token: str | None = None,
+    api_key: str | None = None,
     use_cache: bool = True,
 ) -> dict:
     """Run Step 1 of the current bicameral-ingest SKILL.md on a transcript.
@@ -197,9 +201,9 @@ def extract_from_current_skill(
     (model, SKILL.md SHA, transcript SHA). Any edit to SKILL.md invalidates
     prior cache entries for that branch.
 
-    Auth: uses `oauth_token` (or CLAUDE_CODE_OAUTH_TOKEN env var) sent as
-    `Authorization: Bearer <token>`. In CI the token is provided as a
-    repo-level GitHub secret and exported into the step env.
+    Auth: uses `api_key` (or ANTHROPIC_API_KEY env var) sent as the
+    `x-api-key` header. In CI the key is provided as a GitHub environment
+    secret in the `ci-test` environment and exported into the step env.
     """
     skill_md_path = skill_md_path or SKILL_MD_PATH
     skill_md = _load_skill_md(skill_md_path)
@@ -211,14 +215,14 @@ def extract_from_current_skill(
     if use_cache and cache_file.exists():
         return json.loads(cache_file.read_text(encoding="utf-8"))
 
-    chosen_oauth = oauth_token or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-    if not chosen_oauth.strip():
+    chosen_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not chosen_key.strip():
         raise RuntimeError(
-            "CLAUDE_CODE_OAUTH_TOKEN is missing or empty — the env var "
-            "resolved to '' which means the GitHub secret reference did "
-            "not expand. Check that the secret exists at the repository "
-            "(or org with this repo in allowed-repositories) and that the "
-            "workflow step's `env:` block maps it correctly."
+            "ANTHROPIC_API_KEY is missing or empty — the env var resolved "
+            "to '' which means the GitHub secret reference did not expand. "
+            "Check that the secret exists in the `ci-test` environment "
+            "(Settings → Environments → ci-test → Environment secrets) "
+            "and that the workflow job declares `environment: ci-test`."
         )
 
     skill_excerpt = _extract_step1_excerpt(skill_md)
@@ -232,7 +236,7 @@ def extract_from_current_skill(
         model=chosen_model,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        oauth_token=chosen_oauth,
+        api_key=chosen_key,
     )
     parsed = _parse_response_json(body)
 

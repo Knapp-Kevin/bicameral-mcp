@@ -76,8 +76,8 @@ def test_parse_response_json_rejects_invalid_json():
 def test_cache_hit_returns_without_auth(monkeypatch):
     """When a cache file exists for (model, skill_sha, transcript_sha) we
     must return its contents without ever touching the network. Proven by
-    unsetting CLAUDE_CODE_OAUTH_TOKEN: if the cache were missed the call
-    would KeyError on the missing env var."""
+    unsetting ANTHROPIC_API_KEY: if the cache were missed the call would
+    raise a RuntimeError on the missing env var."""
     tmp = Path(tempfile.mkdtemp())
     skill_md = tmp / "SKILL.md"
     skill_md.write_text(
@@ -94,7 +94,7 @@ def test_cache_hit_returns_without_auth(monkeypatch):
         json.dumps({"decisions": [{"description": "use BM25 for retrieval"}], "action_items": []})
     )
 
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     try:
         result = extract_from_current_skill(
             transcript, source_ref="test", skill_md_path=skill_md
@@ -104,3 +104,18 @@ def test_cache_hit_returns_without_auth(monkeypatch):
 
     assert result["decisions"][0]["description"] == "use BM25 for retrieval"
     assert result["action_items"] == []
+
+
+def test_missing_api_key_raises_when_cache_miss(monkeypatch, tmp_path):
+    """Cache-cold call with ANTHROPIC_API_KEY unset must raise a clear
+    RuntimeError rather than attempt an unauthenticated request."""
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text("## Steps\n### 1. Extract candidate decisions\nrules\n")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        extract_from_current_skill(
+            "fresh transcript text",
+            source_ref="test-miss",
+            skill_md_path=skill_md,
+            use_cache=False,
+        )
