@@ -1,7 +1,18 @@
 """Precision/recall metrics for the M1 decision-relevance eval.
 
 Compares a skill-extraction output against a pregenerated ground-truth
-fixture using rapidfuzz token-set ratio on decision descriptions.
+fixture. Two matchers are available:
+
+1. **LLM-as-judge** (Haiku 4.5 via ``_extraction_matcher.llm_match``) —
+   default when ``ANTHROPIC_API_KEY`` is set. Handles paraphrase-equivalent
+   decisions that share meaning but not token distribution.
+
+2. **rapidfuzz** (``fuzz.token_set_ratio`` at threshold 70) — offline
+   fallback for unit tests and for runs without network access. Brittle
+   on paraphrases but deterministic and free.
+
+CI defaults to ``matcher="auto"``, which picks LLM when the key is present
+and rapidfuzz otherwise.
 
 Fixture format (one JSON file per transcript):
 
@@ -14,32 +25,23 @@ Fixture format (one JSON file per transcript):
       "action_items": [ {"text": "...", "owner": "..."}, ... ]
     }
 
-The fixture is **hand-editable**. Opus 4.6 is only the bootstrap tool via
-``tests/regen_extraction_fixtures.py``; the committed JSON is the ground
-truth, and humans may correct it over time.
+Metric math (identical across matchers):
 
-Metric:
-
-    For each extracted decision d_actual, find its best fuzzy match in the
-    fixture's ``decisions`` via ``rapidfuzz.fuzz.token_set_ratio``. A match
-    is counted when the score meets ``MATCH_THRESHOLD``. Matching is 1:1 —
-    once a fixture item is matched it's removed from the candidate pool so
-    the actual can't double-match.
-
-      true positives  = matched extracted decisions
-      false positives = unmatched extracted decisions
-      false negatives = unmatched fixture decisions
+      true positives  = actuals paired with an expected
+      false positives = actuals with no paired expected
+      false negatives = expecteds with no paired actual
       precision       = TP / (TP + FP)
       recall          = TP / (TP + FN)
       f1              = 2 * P * R / (P + R)
 
-Skipped (metric reports ``None``) when the fixture file is absent, so
+Skipped (``{"skipped": True, ...}``) when the fixture file is absent, so
 fixture-less transcripts don't break CI before the ground-truth set is
 bootstrapped.
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -65,15 +67,69 @@ def _descs(items: list[dict]) -> list[str]:
     return [str(d.get("description", "")).strip() for d in items if d.get("description")]
 
 
+def _rapidfuzz_match(
+    actual: list[str], expected: list[str]
+) -> list[tuple[int, int | None]]:
+    """Rapidfuzz 1:1 matching. Returns (actual_idx, expected_idx | None) pairs.
+
+    For each actual in order, pick the best remaining expected by
+    ``token_set_ratio``. Match if the score meets ``MATCH_THRESHOLD``.
+    Deterministic, cheap, but brittle on paraphrase-equivalent decisions
+    that share meaning but not token distribution.
+    """
+    unmatched_expected_idx = list(range(len(expected)))
+    pairs: list[tuple[int, int | None]] = []
+    for ai, a in enumerate(actual):
+        if not unmatched_expected_idx:
+            pairs.append((ai, None))
+            continue
+        best_slot = -1
+        best_score = -1.0
+        for slot, ei in enumerate(unmatched_expected_idx):
+            score = fuzz.token_set_ratio(a, expected[ei])
+            if score > best_score:
+                best_score = score
+                best_slot = slot
+        if best_score >= MATCH_THRESHOLD:
+            ei = unmatched_expected_idx.pop(best_slot)
+            pairs.append((ai, ei))
+        else:
+            pairs.append((ai, None))
+    return pairs
+
+
+def _pick_matcher(matcher: str) -> str:
+    """Resolve matcher='auto' to a concrete choice based on env.
+
+    Returns "llm" when ``ANTHROPIC_API_KEY`` is set, otherwise "rapidfuzz".
+    """
+    if matcher != "auto":
+        return matcher
+    return "llm" if os.environ.get("ANTHROPIC_API_KEY", "").strip() else "rapidfuzz"
+
+
 def compute_extraction_metrics(
     extracted_decisions: list[dict],
     fixture: dict | None,
+    *,
+    matcher: str = "auto",
 ) -> dict[str, Any]:
-    """Match extracted decisions against fixture decisions.
+    """Match extracted decisions against fixture decisions and return metrics.
 
     Returns ``{"skipped": True, "reason": "no fixture"}`` when the fixture
     is absent, otherwise a dict with precision, recall, f1, tp/fp/fn counts,
-    and the unmatched lists (useful for debugging and calibration).
+    unmatched lists (useful for debugging and calibration), and the
+    matcher identity used.
+
+    Args:
+        extracted_decisions: list of ``{"description": str}`` dicts from
+            the current skill's extraction.
+        fixture: dict loaded from ``fixtures/extraction/<source_ref>.json``
+            with a ``decisions`` array. ``None`` triggers the skipped path.
+        matcher: ``"auto"`` (default) picks LLM-as-judge when
+            ``ANTHROPIC_API_KEY`` is set, else rapidfuzz. ``"llm"`` or
+            ``"rapidfuzz"`` force a specific matcher (raises RuntimeError
+            if LLM is requested without the key).
     """
     if fixture is None:
         return {"skipped": True, "reason": "no fixture"}
@@ -81,29 +137,25 @@ def compute_extraction_metrics(
     actual = _descs(extracted_decisions)
     expected = _descs(fixture.get("decisions") or [])
 
-    unmatched_expected = list(expected)
-    matched: list[tuple[str, str, float]] = []
-    unmatched_actual: list[str] = []
+    chosen = _pick_matcher(matcher)
 
-    for a in actual:
-        if not unmatched_expected:
-            unmatched_actual.append(a)
-            continue
-        # Find best match in remaining expected pool
-        best_i = -1
-        best_score = -1.0
-        for i, e in enumerate(unmatched_expected):
-            score = fuzz.token_set_ratio(a, e)
-            if score > best_score:
-                best_score = score
-                best_i = i
-        if best_score >= MATCH_THRESHOLD:
-            matched.append((a, unmatched_expected[best_i], best_score))
-            unmatched_expected.pop(best_i)
-        else:
-            unmatched_actual.append(a)
+    if chosen == "llm":
+        # Import inside the function so offline tests that force
+        # matcher="rapidfuzz" don't drag in httpx / network code.
+        from _extraction_matcher import llm_match  # type: ignore[import-not-found]
+        pairs = llm_match(actual, expected)
+    elif chosen == "rapidfuzz":
+        pairs = _rapidfuzz_match(actual, expected)
+    else:
+        raise ValueError(f"unknown matcher: {matcher!r}")
 
-    tp = len(matched)
+    matched_expected_idx = {ei for _, ei in pairs if ei is not None}
+    unmatched_actual = [actual[ai] for ai, ei in pairs if ei is None]
+    unmatched_expected = [
+        expected[i] for i in range(len(expected)) if i not in matched_expected_idx
+    ]
+
+    tp = sum(1 for _, ei in pairs if ei is not None)
     fp = len(unmatched_actual)
     fn = len(unmatched_expected)
 
@@ -113,6 +165,7 @@ def compute_extraction_metrics(
 
     return {
         "skipped": False,
+        "matcher": chosen,
         "fixture_decisions": len(expected),
         "extracted_decisions": len(actual),
         "true_positives": tp,
@@ -121,7 +174,7 @@ def compute_extraction_metrics(
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),
-        "match_threshold": MATCH_THRESHOLD,
+        "match_threshold": MATCH_THRESHOLD if chosen == "rapidfuzz" else None,
         "unmatched_actual": unmatched_actual,
         "unmatched_expected": unmatched_expected,
     }

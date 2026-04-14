@@ -337,8 +337,20 @@ async def run(args) -> tuple[dict, int]:
         f"grounded ({aggregate_pct:.0%}, variance={repo_variance:.3f})"
     )
     if not aggregate_extraction.get("skipped", True):
+        # Peek at any scored transcript to report which matcher was used
+        # (all transcripts in a run use the same matcher per --skill-variant).
+        sample_matcher = next(
+            (
+                t["extraction_metrics"].get("matcher", "?")
+                for r in repo_reports
+                for t in r["transcripts"]
+                if not t["extraction_metrics"].get("skipped", False)
+            ),
+            "?",
+        )
         print(
-            f"  extraction: P={aggregate_extraction['precision']:.2f} "
+            f"  extraction ({sample_matcher}): "
+            f"P={aggregate_extraction['precision']:.2f} "
             f"R={aggregate_extraction['recall']:.2f} "
             f"F1={aggregate_extraction['f1']:.2f} "
             f"(TP={aggregate_extraction['true_positives']} "
