@@ -1,10 +1,11 @@
-"""Tests for decision grounding reuse (Phase 1 drift fix).
+"""Tests for vocab_cache grounding reuse.
 
-Tests _validate_cached_regions logic and search_grounded_intents query.
+Tests _validate_cached_regions logic and vocab_cache query functions.
 """
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -187,3 +188,98 @@ class TestValidateCachedRegions:
         ]
         result = _validate_cached_regions(regions, graph)
         assert result == []
+
+
+# ── vocab_cache SurrealDB query tests ──────────────────────────────────
+
+
+@pytest.fixture
+async def ledger_client():
+    """Create a fresh in-memory SurrealDB client with schema initialized."""
+    from ledger.client import LedgerClient
+    from ledger.schema import init_schema
+
+    client = LedgerClient(url="memory://", ns="test", db="test_vocab")
+    await client.connect()
+    await init_schema(client)
+    yield client
+
+
+@pytest.mark.asyncio
+class TestVocabCacheQueries:
+    """Integration tests for lookup_vocab_cache / upsert_vocab_cache."""
+
+    async def test_upsert_and_lookup(self, ledger_client):
+        """Write a cache entry, then BM25 search for it."""
+        from ledger.queries import lookup_vocab_cache, upsert_vocab_cache
+
+        symbols = [
+            {"symbol": "authorize", "file_path": "auth.py",
+             "start_line": 10, "end_line": 30, "type": "function"},
+        ]
+        await upsert_vocab_cache(ledger_client, "payment authorization flow", "repo-a", symbols)
+
+        result = await lookup_vocab_cache(ledger_client, "payment authorization", "repo-a")
+        assert len(result) == 1
+        assert result[0]["symbol"] == "authorize"
+        assert result[0]["file_path"] == "auth.py"
+
+    async def test_lookup_miss_different_repo(self, ledger_client):
+        """Cache entry for repo-a should not match repo-b."""
+        from ledger.queries import lookup_vocab_cache, upsert_vocab_cache
+
+        symbols = [{"symbol": "foo", "file_path": "a.py",
+                     "start_line": 1, "end_line": 5, "type": "function"}]
+        await upsert_vocab_cache(ledger_client, "some query", "repo-a", symbols)
+
+        result = await lookup_vocab_cache(ledger_client, "some query", "repo-b")
+        assert result == []
+
+    async def test_lookup_miss_no_match(self, ledger_client):
+        """Completely unrelated query returns empty."""
+        from ledger.queries import lookup_vocab_cache, upsert_vocab_cache
+
+        symbols = [{"symbol": "foo", "file_path": "a.py",
+                     "start_line": 1, "end_line": 5, "type": "function"}]
+        await upsert_vocab_cache(ledger_client, "payment authorization flow", "repo-a", symbols)
+
+        result = await lookup_vocab_cache(ledger_client, "database migration", "repo-a")
+        assert result == []
+
+    async def test_hit_count_increments(self, ledger_client):
+        """Each lookup should bump hit_count."""
+        from ledger.queries import lookup_vocab_cache, upsert_vocab_cache
+
+        symbols = [{"symbol": "bar", "file_path": "b.py",
+                     "start_line": 1, "end_line": 5, "type": "function"}]
+        await upsert_vocab_cache(ledger_client, "webhook retry logic", "repo-a", symbols)
+
+        # First lookup
+        await lookup_vocab_cache(ledger_client, "webhook retry", "repo-a")
+        # Second lookup
+        await lookup_vocab_cache(ledger_client, "webhook retry", "repo-a")
+
+        # Check hit_count via raw query
+        rows = await ledger_client.query(
+            "SELECT hit_count FROM vocab_cache WHERE repo = $r",
+            {"r": "repo-a"},
+        )
+        assert rows
+        # Initial upsert sets hit_count=1, each lookup adds 1 → expect 3
+        assert rows[0]["hit_count"] >= 3
+
+    async def test_upsert_overwrites_symbols(self, ledger_client):
+        """Re-upserting same query+repo should update symbols."""
+        from ledger.queries import lookup_vocab_cache, upsert_vocab_cache
+
+        symbols_v1 = [{"symbol": "old_fn", "file_path": "a.py",
+                        "start_line": 1, "end_line": 5, "type": "function"}]
+        symbols_v2 = [{"symbol": "new_fn", "file_path": "b.py",
+                        "start_line": 10, "end_line": 20, "type": "function"}]
+
+        await upsert_vocab_cache(ledger_client, "test query text", "repo-a", symbols_v1)
+        await upsert_vocab_cache(ledger_client, "test query text", "repo-a", symbols_v2)
+
+        result = await lookup_vocab_cache(ledger_client, "test query", "repo-a")
+        assert len(result) == 1
+        assert result[0]["symbol"] == "new_fn"

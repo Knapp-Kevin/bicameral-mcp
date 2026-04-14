@@ -2,7 +2,10 @@
 """
 Standalone code locator evaluation — no SurrealDB needed.
 
-Measures retrieval quality of search_code() against ground truth decisions.
+Measures end-to-end grounding quality of ground_mappings() against ground
+truth decisions. Tests the full production pipeline: BM25 search → fuzzy
+symbol matching → coverage loop tier broadening → code_region output.
+
 Silong: run this after any change to code_locator/ to see if accuracy improves.
 
 Usage:
@@ -34,10 +37,10 @@ def get_adapter(repo_path: str):
     return adapter
 
 
-def _is_relevant(hit: dict, expected_symbols: set[str], expected_files: list[str]) -> bool:
-    """Check if a single hit is relevant (symbol match OR file pattern match)."""
-    sym = hit.get("symbol_name", "")
-    fp = hit.get("file_path", "")
+def _is_relevant(region: dict, expected_symbols: set[str], expected_files: list[str]) -> bool:
+    """Check if a grounded code_region is relevant (symbol match OR file pattern match)."""
+    sym = region.get("symbol", "")
+    fp = region.get("file_path", "")
     return sym in expected_symbols or any(pat in fp for pat in expected_files)
 
 
@@ -49,12 +52,16 @@ def evaluate(
     use_description: bool = False,
     export_full: bool = False,
 ) -> dict:
-    """Run search_code for each decision, compare against ground truth.
+    """Run ground_mappings for each decision, compare against ground truth.
+
+    Uses the full production grounding pipeline (BM25 + fuzzy symbol matching +
+    coverage loop) instead of raw search_code(), so recall measures actual
+    symbol-level grounding accuracy.
 
     Args:
         use_description: If True, use the full description as query instead of keywords[0].
                          This matches the live ingest path behavior.
-        export_full: If True, include all returned results per decision (not just top-K).
+        export_full: If True, include all returned regions per decision (not just top-K).
     """
     results = []
 
@@ -73,8 +80,11 @@ def evaluate(
         if not query:
             continue
 
+        # Ground through the full pipeline: BM25 → fuzzy symbol → coverage tiers
         try:
-            hits = adapter.search_code(query)
+            mapping = {"intent": query}
+            resolved, _deferred = adapter.ground_mappings([mapping])
+            code_regions = resolved[0].get("code_regions", []) if resolved else []
         except Exception as e:
             results.append({
                 "description": d["description"][:80],
@@ -84,39 +94,43 @@ def evaluate(
             })
             continue
 
-        top_hits = hits[:top_k]
-        all_hits = hits  # full result list for analysis
+        top_regions = code_regions[:top_k]
+        all_regions = code_regions
         found_symbols = set()
         found_files = set()
         first_relevant_rank = None
 
-        for rank, hit in enumerate(top_hits):
-            sym = hit.get("symbol_name", "")
-            fp = hit.get("file_path", "")
-            found_symbols.add(sym)
+        for rank, region in enumerate(top_regions):
+            sym = region.get("symbol", "")
+            fp = region.get("file_path", "")
+            if sym:
+                found_symbols.add(sym)
             found_files.add(fp)
 
-            if _is_relevant(hit, expected_symbols, expected_files) and first_relevant_rank is None:
+            if _is_relevant(region, expected_symbols, expected_files) and first_relevant_rank is None:
                 first_relevant_rank = rank + 1
 
-        # Precision@k: fraction of top_k results that are relevant
-        relevant_in_top_k = sum(1 for h in top_hits if _is_relevant(h, expected_symbols, expected_files))
-        irrelevant_in_top_k = len(top_hits) - relevant_in_top_k
-        precision = relevant_in_top_k / len(top_hits) if top_hits else 0
+        # Precision@k: fraction of top_k regions that are relevant
+        relevant_in_top_k = sum(1 for r in top_regions if _is_relevant(r, expected_symbols, expected_files))
+        irrelevant_in_top_k = len(top_regions) - relevant_in_top_k
+        precision = relevant_in_top_k / len(top_regions) if top_regions else 0
 
-        # Recall: fraction of expected symbols found in top_k
+        # Recall: fraction of expected symbols found in grounded regions
         matched_symbols = expected_symbols & found_symbols
         recall = len(matched_symbols) / len(expected_symbols) if expected_symbols else 0
 
-        # MRR: 1/rank of first relevant result
+        # MRR: 1/rank of first relevant region
         mrr = (1.0 / first_relevant_rank) if first_relevant_rank else 0
 
-        # Check full result list for rank-overflow analysis
+        # Check full region list for rank-overflow analysis
         first_relevant_full = None
-        for rank, hit in enumerate(all_hits):
-            if _is_relevant(hit, expected_symbols, expected_files):
+        for rank, region in enumerate(all_regions):
+            if _is_relevant(region, expected_symbols, expected_files):
                 first_relevant_full = rank + 1
                 break
+
+        # Grounding tier (from coverage loop)
+        grounding_tier = top_regions[0].get("grounding_tier") if top_regions else None
 
         entry = {
             "description": d["description"][:80],
@@ -124,42 +138,44 @@ def evaluate(
             "precision": round(precision, 2),
             "recall": round(recall, 2),
             "mrr": round(mrr, 2),
-            "hits": len(top_hits),
-            "total_hits": len(all_hits),
+            "grounded": bool(code_regions),
+            "grounding_tier": grounding_tier,
+            "regions": len(top_regions),
+            "total_regions": len(all_regions),
             "false_positives_in_top_k": irrelevant_in_top_k,
             "first_relevant_rank_full": first_relevant_full,
             "expected_symbols": list(expected_symbols),
             "expected_file_patterns": expected_files,
-            "found_symbols": [h.get("symbol_name", "") for h in top_hits],
-            "found_files": [h.get("file_path", "") for h in top_hits],
+            "found_symbols": list(found_symbols),
+            "found_files": list(found_files),
         }
 
         if export_full:
-            entry["all_results"] = [
+            entry["all_regions"] = [
                 {
                     "rank": i + 1,
-                    "file_path": h.get("file_path", ""),
-                    "symbol_name": h.get("symbol_name", ""),
-                    "score": h.get("score", 0),
-                    "method": h.get("method", ""),
-                    "line_number": h.get("line_number", 0),
-                    "relevant": _is_relevant(h, expected_symbols, expected_files),
+                    "file_path": r.get("file_path", ""),
+                    "symbol": r.get("symbol", ""),
+                    "type": r.get("type", ""),
+                    "grounding_tier": r.get("grounding_tier"),
+                    "relevant": _is_relevant(r, expected_symbols, expected_files),
                 }
-                for i, h in enumerate(all_hits)
+                for i, r in enumerate(all_regions)
             ]
 
         results.append(entry)
 
         if verbose:
-            status = "hit" if mrr > 0 else "MISS"
-            print(f"  [{status}] {entry['description']}")
+            status = "hit" if mrr > 0 else ("grounded" if code_regions else "MISS")
+            tier_str = f" tier={grounding_tier}" if grounding_tier is not None else ""
+            print(f"  [{status}{tier_str}] {entry['description']}")
             print(f"    query: {query}")
-            print(f"    P@{top_k}={precision:.0%} R={recall:.0%} MRR={mrr:.2f} FP={irrelevant_in_top_k}/{len(top_hits)}")
-            if mrr == 0:
+            print(f"    P@{top_k}={precision:.0%} R={recall:.0%} MRR={mrr:.2f} regions={len(code_regions)}")
+            if recall == 0 and expected_symbols:
                 print(f"    expected: {list(expected_symbols)[:3]}")
-                print(f"    got files: {[h.get('file_path','?').split('/')[-1] for h in top_hits[:3]]}")
+                print(f"    found:    {list(found_symbols)[:3]}")
                 if first_relevant_full:
-                    print(f"    (relevant result exists at rank {first_relevant_full} in full list)")
+                    print(f"    (relevant region at rank {first_relevant_full} in full list)")
 
     # Aggregate
     n = len(results)
@@ -170,13 +186,21 @@ def evaluate(
     avg_recall = sum(r.get("recall", 0) for r in results) / n
     avg_mrr = sum(r.get("mrr", 0) for r in results) / n
     hit_rate = sum(1 for r in results if r.get("mrr", 0) > 0) / n
+    grounding_rate = sum(1 for r in results if r.get("grounded")) / n
     total_fp = sum(r.get("false_positives_in_top_k", 0) for r in results)
-    total_top_k_slots = sum(r.get("hits", 0) for r in results)
+    total_top_k_slots = sum(r.get("regions", 0) for r in results)
     fp_rate = total_fp / total_top_k_slots if total_top_k_slots else 0
     rank_overflow_count = sum(
         1 for r in results
         if r.get("mrr", 0) == 0 and r.get("first_relevant_rank_full") is not None
     )
+
+    # Tier distribution
+    tier_counts = {}
+    for r in results:
+        t = r.get("grounding_tier")
+        if t is not None:
+            tier_counts[t] = tier_counts.get(t, 0) + 1
 
     return {
         "total_decisions": n,
@@ -184,15 +208,17 @@ def evaluate(
         "avg_recall": round(avg_recall, 3),
         "mrr_at_k": round(avg_mrr, 3),
         "hit_rate": round(hit_rate, 3),
+        "grounding_rate": round(grounding_rate, 3),
         "false_positive_rate": round(fp_rate, 3),
         "rank_overflow_count": rank_overflow_count,
+        "tier_distribution": tier_counts,
         "top_k": top_k,
         "results": results,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Code Locator Retrieval Evaluation")
+    parser = argparse.ArgumentParser(description="Code Locator E2E Grounding Evaluation")
     parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[3]),
                         help="Path to repo (default: bicameral root)")
     parser.add_argument("--multi-repo", type=str, default=None,
@@ -200,6 +226,8 @@ def main():
     parser.add_argument("--top-k", type=int, default=3, help="Top-K for precision/MRR")
     parser.add_argument("--min-mrr", type=float, default=None,
                         help="Minimum MRR threshold — exit non-zero if below (regression gate)")
+    parser.add_argument("--min-recall", type=float, default=None,
+                        help="Minimum recall threshold — exit non-zero if below (regression gate)")
     parser.add_argument("--max-repo-variance", type=float, default=None,
                         help="Maximum allowed variance in MRR across repos")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print per-decision results")
@@ -207,7 +235,7 @@ def main():
     parser.add_argument("--use-description", action="store_true",
                         help="Query with full description instead of keywords[0] (matches ingest behavior)")
     parser.add_argument("--export-full", action="store_true",
-                        help="Include all results per decision in JSON output (not just top-K)")
+                        help="Include all regions per decision in JSON output (not just top-K)")
     args = parser.parse_args()
 
     if args.multi_repo:
@@ -226,7 +254,7 @@ def main():
         else:
             repo_decisions = ALL_DECISIONS
 
-        print(f"📊 Code Locator Evaluation — {repo_name}")
+        print(f"  Code Locator E2E Evaluation -- {repo_name}")
         print(f"   Repo: {repo_path}")
         print(f"   Decisions: {len(repo_decisions)}")
         print(f"   Top-K: {args.top_k}")
@@ -244,30 +272,37 @@ def main():
         all_reports[repo_name] = report
 
         query_mode = "description" if args.use_description else "keywords[0]"
+        tier_dist = report.get("tier_distribution", {})
+        tier_str = " ".join(f"T{k}={v}" for k, v in sorted(tier_dist.items()))
         print(f"\n{'='*50}")
         print(f"  [{repo_name}] (query mode: {query_mode})")
         print(f"  Precision@{args.top_k}:  {report['avg_precision_at_k']:.1%}")
         print(f"  Recall:        {report['avg_recall']:.1%}")
         print(f"  MRR@{args.top_k}:        {report['mrr_at_k']:.3f}")
         print(f"  Hit Rate:      {report['hit_rate']:.1%}")
+        print(f"  Grounding:     {report['grounding_rate']:.1%}")
         print(f"  FP Rate:       {report['false_positive_rate']:.1%}")
+        print(f"  Tiers:         {tier_str or 'none'}")
         print(f"  Rank Overflow: {report['rank_overflow_count']} (miss in top-{args.top_k}, hit in full list)")
         print(f"  Decisions:     {report['total_decisions']}")
         print(f"{'='*50}\n")
 
     # Aggregate across repos
     mrr_values = [r["mrr_at_k"] for r in all_reports.values()]
+    recall_values = [r["avg_recall"] for r in all_reports.values()]
     avg_mrr = sum(mrr_values) / len(mrr_values) if mrr_values else 0
+    avg_recall = sum(recall_values) / len(recall_values) if recall_values else 0
 
     if len(all_reports) > 1:
         variance = max(mrr_values) - min(mrr_values) if len(mrr_values) > 1 else 0
-        print(f"  Aggregate MRR@{args.top_k}: {avg_mrr:.3f}  (variance: {variance:.3f})")
+        print(f"  Aggregate MRR@{args.top_k}: {avg_mrr:.3f}  Recall: {avg_recall:.3f}  (variance: {variance:.3f})")
     else:
         variance = 0
 
     combined = {
         "repos": {name: r for name, r in all_reports.items()},
         "aggregate_mrr": round(avg_mrr, 3),
+        "aggregate_recall": round(avg_recall, 3),
         "repo_variance": round(variance, 3),
     }
 
@@ -278,14 +313,17 @@ def main():
     # Regression gate
     exit_code = 0
     if args.min_mrr is not None and avg_mrr < args.min_mrr:
-        print(f"\n❌ REGRESSION: MRR {avg_mrr:.3f} < threshold {args.min_mrr:.3f}")
+        print(f"\n  REGRESSION: MRR {avg_mrr:.3f} < threshold {args.min_mrr:.3f}")
+        exit_code = 1
+    if args.min_recall is not None and avg_recall < args.min_recall:
+        print(f"\n  REGRESSION: Recall {avg_recall:.3f} < threshold {args.min_recall:.3f}")
         exit_code = 1
     if args.max_repo_variance is not None and variance > args.max_repo_variance:
-        print(f"\n❌ REGRESSION: repo variance {variance:.3f} > threshold {args.max_repo_variance:.3f}")
+        print(f"\n  REGRESSION: repo variance {variance:.3f} > threshold {args.max_repo_variance:.3f}")
         exit_code = 1
 
-    if exit_code == 0 and args.min_mrr is not None:
-        print(f"\n✅ PASS: MRR {avg_mrr:.3f} ≥ threshold {args.min_mrr:.3f}")
+    if exit_code == 0 and (args.min_mrr is not None or args.min_recall is not None):
+        print(f"\n  PASS: MRR {avg_mrr:.3f}  Recall {avg_recall:.3f}")
 
     sys.exit(exit_code)
 

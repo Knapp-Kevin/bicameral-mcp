@@ -221,15 +221,14 @@ async def search_grounded_intents(
     min_confidence: float = 0.5,
     max_results: int = 3,
 ) -> list[dict]:
-    """Decision grounding reuse: find similar previously-grounded intents.
+    """Find similar previously-grounded intents via intent-table BM25.
 
-    Uses the intent table's BM25 index to find semantically similar
-    decisions that already have maps_to edges, then walks the graph
-    to return their code_regions.
+    NOTE: No longer used by the grounding reuse path (see
+    lookup_vocab_cache / upsert_vocab_cache). Retained for
+    decision-ledger graph queries.
 
-    This is distinct from the vocab_cache table (which caches raw
-    search_code query→symbol mappings). This function reuses
-    intent-level groundings for similar decision descriptions.
+    Walks the graph intent → maps_to → symbol → implements → code_region
+    to return code_regions for similar prior decisions.
 
     NOTE: search::score(0) returns 0.0 in SurrealDB v2 embedded mode
     (documented in pilot/mcp/CLAUDE.md). We use BM25 match presence
@@ -278,6 +277,75 @@ async def search_grounded_intents(
     # Filter out results with no code_regions (graph walk may return
     # empty arrays if all code_regions belong to a different repo)
     return [r for r in (rows or []) if r.get("code_regions")]
+
+
+# ── vocab_cache: grounding reuse cache ─────────────────────────────────
+
+
+async def lookup_vocab_cache(
+    client: LedgerClient,
+    query_text: str,
+    repo: str,
+    max_results: int = 3,
+) -> list[dict]:
+    """BM25 lookup on vocab_cache for cached grounding results.
+
+    Returns the ``symbols`` array from the top matching cache entry
+    (a list of code_region-shaped dicts). Empty list on miss.
+
+    On hit, increments hit_count and refreshes last_hit for LRU tracking.
+    """
+    rows = await client.query(
+        """
+        SELECT *
+        FROM vocab_cache
+        WHERE query_text @0@ $query
+            AND repo = $repo
+        LIMIT $max_results
+        """,
+        {"query": query_text, "repo": repo, "max_results": max_results},
+    )
+    if not rows:
+        return []
+
+    top = rows[0]
+    top_id = top.get("id")
+    if top_id:
+        await client.query(
+            f"UPDATE {top_id} SET hit_count += 1, last_hit = time::now()",
+        )
+
+    return top.get("symbols") or []
+
+
+async def upsert_vocab_cache(
+    client: LedgerClient,
+    query_text: str,
+    repo: str,
+    symbols: list[dict],
+) -> None:
+    """Write or update a vocab_cache entry.
+
+    Stores code_region-shaped dicts in the symbols array for later
+    reuse. Line numbers may go stale but are validated against the
+    live SymbolDB index on every cache hit (see _validate_cached_regions).
+    """
+    await client.query(
+        """
+        UPSERT vocab_cache SET
+            query_text = $query_text,
+            repo       = $repo,
+            symbols    = $symbols,
+            hit_count  = IF hit_count THEN hit_count + 1 ELSE 1 END,
+            last_hit   = time::now()
+        WHERE query_text = $query_text AND repo = $repo
+        """,
+        {
+            "query_text": query_text,
+            "repo": repo,
+            "symbols": symbols,
+        },
+    )
 
 
 async def get_decisions_for_file(

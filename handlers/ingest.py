@@ -151,40 +151,59 @@ async def handle_ingest(
     repo = str(payload.get("repo") or ctx.repo_path)
     payload = ctx.code_graph.resolve_symbols(payload)
 
-    # Decision grounding reuse: check if similar intents were already grounded.
+    # Vocab cache reuse: check if similar queries were already grounded.
     # Runs before ground_mappings — a hit skips the full BM25 pipeline.
     mappings_to_ground = payload.get("mappings") or []
     cache_hits = 0
+    pre_grounded: set[str] = set()
     for mapping in mappings_to_ground:
         if mapping.get("code_regions"):
+            # Track caller-supplied regions so write-back doesn't cache them
+            desc = mapping.get("intent") or (mapping.get("span") or {}).get("text", "")
+            if desc:
+                pre_grounded.add(desc)
             continue
         description = mapping.get("intent") or (mapping.get("span") or {}).get("text", "")
         if not description:
             continue
         try:
-            cached = await ledger.lookup_cached_groundings(description, repo)
-            if cached:
-                top = cached[0]
+            cached_symbols = await ledger.lookup_vocab_cache(description, repo)
+            if cached_symbols:
                 valid_regions = _validate_cached_regions(
-                    top.get("code_regions", []), ctx.code_graph,
+                    cached_symbols, ctx.code_graph,
                 )
                 if valid_regions:
                     mapping["code_regions"] = valid_regions
                     cache_hits += 1
+                    pre_grounded.add(description)
                     logger.info(
-                        "[ingest] grounding reuse hit for '%s' (confidence=%.2f, %d/%d regions valid)",
-                        description[:60], top.get("confidence", 0),
-                        len(valid_regions), len(top.get("code_regions", [])),
+                        "[ingest] vocab cache hit for '%s' (%d/%d regions valid)",
+                        description[:60],
+                        len(valid_regions), len(cached_symbols),
                     )
                 else:
                     logger.debug(
-                        "[ingest] grounding reuse discarded (all regions stale): '%s'",
+                        "[ingest] vocab cache discarded (all regions stale): '%s'",
                         description[:60],
                     )
         except Exception as exc:
-            logger.debug("[ingest] grounding reuse lookup failed: %s", exc)
+            logger.debug("[ingest] vocab cache lookup failed: %s", exc)
 
     mappings, grounding_deferred = ctx.code_graph.ground_mappings(mappings_to_ground)
+
+    # Write-back: cache newly-grounded results in vocab_cache for future reuse.
+    for mapping in mappings:
+        code_regions = mapping.get("code_regions")
+        if not code_regions:
+            continue
+        desc = mapping.get("intent") or (mapping.get("span") or {}).get("text", "")
+        if not desc or desc in pre_grounded:
+            continue
+        try:
+            await ledger.upsert_vocab_cache(desc, repo, code_regions)
+        except Exception as exc:
+            logger.debug("[ingest] vocab cache write failed: %s", exc)
+
     payload = {**payload, "mappings": mappings}
     result = await ledger.ingest_payload(payload)
 

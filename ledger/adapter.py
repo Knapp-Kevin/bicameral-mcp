@@ -26,11 +26,12 @@ from .queries import (
     relate_implements,
     relate_maps_to,
     relate_yields,
+    lookup_vocab_cache,
     search_by_bm25,
-    search_grounded_intents,
     update_intent_status,
     update_region_hash,
     upsert_source_cursor,
+    upsert_vocab_cache,
     upsert_code_region,
     upsert_intent,
     upsert_source_span,
@@ -100,17 +101,24 @@ class SurrealDBLedgerAdapter:
         await self._ensure_connected()
         return await search_by_bm25(self._client, query, max_results, min_confidence)
 
-    async def lookup_cached_groundings(
+    async def lookup_vocab_cache(
         self,
-        query: str,
+        query_text: str,
         repo: str,
-        min_confidence: float = 0.5,
     ) -> list[dict]:
-        """Check if the ledger has similar prior intents with code_regions."""
+        """Check vocab_cache for cached grounding results."""
         await self._ensure_connected()
-        return await search_grounded_intents(
-            self._client, query, repo, min_confidence,
-        )
+        return await lookup_vocab_cache(self._client, query_text, repo)
+
+    async def upsert_vocab_cache(
+        self,
+        query_text: str,
+        repo: str,
+        symbols: list[dict],
+    ) -> None:
+        """Cache grounded code_regions for a query in vocab_cache."""
+        await self._ensure_connected()
+        await upsert_vocab_cache(self._client, query_text, repo, symbols)
 
     async def get_decisions_for_file(self, file_path: str) -> list[dict]:
         """Reverse traversal: all decisions touching symbols in file_path."""
