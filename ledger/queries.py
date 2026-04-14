@@ -534,6 +534,59 @@ async def get_regions_for_files(
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
+async def get_grounding_breakdown(
+    client: LedgerClient,
+    source_type: str | None = None,
+    source_scope: str | None = None,
+) -> list[dict]:
+    """Per-source_ref grounded/ungrounded/total/pct breakdown.
+
+    Used by the M1 decision-relevance eval. Returns one row per distinct
+    source_ref in the intent table. An intent is "grounded" when its status
+    is anything other than "ungrounded" (pending/reflected/drifted all mean
+    the intent is linked to at least one code region).
+    """
+    where_clauses: list[str] = []
+    vars: dict = {}
+    if source_type:
+        where_clauses.append("source_type = $source_type")
+        vars["source_type"] = source_type
+    if source_scope:
+        where_clauses.append("source_ref CONTAINS $source_scope")
+        vars["source_scope"] = source_scope
+    where = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    rows = await client.query(
+        f"""
+        SELECT source_ref, status
+        FROM intent
+        {where}
+        """,
+        vars or None,
+    )
+
+    buckets: dict[str, dict] = {}
+    for row in rows:
+        ref = str(row.get("source_ref") or "")
+        status = str(row.get("status") or "")
+        b = buckets.setdefault(
+            ref,
+            {"source_ref": ref, "grounded": 0, "ungrounded": 0, "total": 0, "grounded_pct": 0.0},
+        )
+        b["total"] += 1
+        if status == "ungrounded":
+            b["ungrounded"] += 1
+        else:
+            b["grounded"] += 1
+
+    out = []
+    for b in buckets.values():
+        b["grounded_pct"] = (b["grounded"] / b["total"]) if b["total"] > 0 else 0.0
+        out.append(b)
+    out.sort(key=lambda r: r["source_ref"])
+    return out
+
+
 def _normalize_decisions(rows: list[dict]) -> list[dict]:
     """Ensure code_regions always have a 'lines' tuple + consistent shape."""
     for row in rows:

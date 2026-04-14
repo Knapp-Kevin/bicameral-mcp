@@ -132,16 +132,32 @@ async def handle_ingest(
             source_refs.append(ref)
 
     stats = result.get("stats", {})
+    intents_created = int(stats.get("intents_created", 0))
+    ungrounded_count = int(stats.get("ungrounded", 0))
+    grounded_count = max(intents_created - ungrounded_count, 0)
+    grounded_pct = (grounded_count / intents_created) if intents_created > 0 else 0.0
+
+    logger.info(
+        "[ingest] complete: %d/%d grounded (%.0f%%) | deferred=%d | source_refs=%s",
+        grounded_count,
+        intents_created,
+        grounded_pct * 100.0,
+        grounding_deferred,
+        source_refs,
+    )
+
     return IngestResponse(
         ingested=bool(result.get("ingested", False)),
         repo=str(result.get("repo", repo)),
         query=str(payload.get("query", "")),
         source_refs=source_refs,
         stats=IngestStats(
-            intents_created=int(stats.get("intents_created", 0)),
+            intents_created=intents_created,
             symbols_mapped=int(stats.get("symbols_mapped", 0)),
             regions_linked=int(stats.get("regions_linked", 0)),
-            ungrounded=int(stats.get("ungrounded", 0)),
+            ungrounded=ungrounded_count,
+            grounded=grounded_count,
+            grounded_pct=grounded_pct,
             grounding_deferred=grounding_deferred,
         ),
         ungrounded_intents=list(result.get("ungrounded_intents", [])),

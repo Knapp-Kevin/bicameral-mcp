@@ -419,3 +419,56 @@ ADVERSARIAL = [d for d in ALL_DECISIONS if d.get("adversarial_type")]
 
 # Decisions that should be ungrounded (no code exists yet)
 UNGROUNDED = [d for d in ALL_DECISIONS if d["status_at_ingest"] == "ungrounded"]
+
+
+# ── Transcript discovery map (M1 decision-relevance eval) ────────────
+#
+# Extends ground-truth fixtures into a corpus registry. The M1 runner reads
+# this to discover which transcript file feeds which repo. Add a new entry
+# here to onboard a new transcript — the runner picks it up automatically,
+# no code change required. `transcript` is resolved relative to the repo
+# root (the parent of pilot/mcp).
+#
+# `repo_key` is matched against the --multi-repo JSON the caller passes:
+#   python tests/eval_decision_relevance.py \
+#     --multi-repo '{"medusa": "test-results/.repos/medusa", "bicameral": "."}'
+# Only entries whose repo_key is in the mapping will run in a given
+# invocation, so partial runs are first-class.
+
+TRANSCRIPT_SOURCES: dict[str, dict] = {
+    # ── Adversarial corpus (M1 stress categories) ─────────────────
+    # M1 evaluates exclusively against this adversarial corpus. Each
+    # transcript deliberately exercises a failure mode documented in
+    # visual-plans/quality_metrics/m1-decision-relevance.html. The CI
+    # workflow aliases repo_key="adversarial" to the cloned medusa
+    # tree (any indexed code works — adversarial transcripts measure
+    # extraction quality, not grounding precision against a specific
+    # codebase). Ground truth for each lives at
+    # pilot/mcp/tests/fixtures/extraction/adv-*.json and is hand-editable.
+    #
+    # Note: the friendly e-commerce corpus (medusa-*, saleor-*, vendure-*)
+    # used to live here as well, but was removed once it became clear that
+    # the friendly transcripts are too easy to be informative about
+    # real-world reliability. The transcript .md files remain in
+    # pilot/ml/data/transcripts/ for reference and other tooling.
+    "adv-strat-fake": {
+        "transcript": "pilot/ml/data/transcripts/adv-strat-fake.md",
+        "repo_key": "adversarial",
+    },
+    "adv-vocab-collide": {
+        "transcript": "pilot/ml/data/transcripts/adv-vocab-collide.md",
+        "repo_key": "adversarial",
+    },
+    "adv-density-extreme": {
+        "transcript": "pilot/ml/data/transcripts/adv-density-extreme.md",
+        "repo_key": "adversarial",
+    },
+    "adv-offtopic-mix": {
+        "transcript": "pilot/ml/data/transcripts/adv-offtopic-mix.md",
+        "repo_key": "adversarial",
+    },
+    "adv-reversal": {
+        "transcript": "pilot/ml/data/transcripts/adv-reversal.md",
+        "repo_key": "adversarial",
+    },
+}
