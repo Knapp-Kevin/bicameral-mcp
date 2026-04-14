@@ -199,6 +199,7 @@ class IngestStats(BaseModel):
     grounded: int = 0
     grounded_pct: float = 0.0  # grounded / intents_created, 0.0 when intents_created == 0
     grounding_deferred: int = 0  # index not ready at ingest time — re-ingest after build_index
+    cache_hits: int = 0  # decision grounding reuse: skipped BM25 via similar prior intent
 
 
 class IngestResponse(BaseModel):

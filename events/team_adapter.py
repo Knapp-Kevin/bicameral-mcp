@@ -86,6 +86,18 @@ class TeamWriteAdapter:
             error=error,
         )
 
+    async def lookup_vocab_cache(self, query_text: str, repo: str) -> list[dict]:
+        """Vocab cache is local bookkeeping — no event emitted."""
+        await self._ensure_ready()
+        return await self._inner.lookup_vocab_cache(query_text, repo)
+
+    async def upsert_vocab_cache(
+        self, query_text: str, repo: str, symbols: list[dict],
+    ) -> None:
+        """Vocab cache is local bookkeeping — no event emitted."""
+        await self._ensure_ready()
+        await self._inner.upsert_vocab_cache(query_text, repo, symbols)
+
     # ── Read methods (pass-through) ──────────────────────────────────────
 
     async def get_all_decisions(self, filter: str = "all") -> list[dict]:

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 #   - Constraint changes
 #   - Table removals
 #   - Anything that would break existing data
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Analyzers
 _ANALYZERS = [
@@ -86,11 +86,14 @@ _TABLES = [
     "DEFINE INDEX idx_span_ref    ON source_span FIELDS source_type, source_ref",
     "DEFINE INDEX idx_span_dedup  ON source_span FIELDS source_type, source_ref, text UNIQUE",
 
-    # vocab_cache — fast repeated query→symbols lookups
+    # vocab_cache — grounding reuse cache for query→code_region lookups.
+    # Wired in handlers/ingest.py: read before ground_mappings(), written after.
+    # Stores code_region-shaped dicts in the symbols array. Line numbers may
+    # go stale but are validated against the live SymbolDB index on every hit.
     "DEFINE TABLE vocab_cache SCHEMAFULL",
     "DEFINE FIELD query_text     ON vocab_cache TYPE string",
     "DEFINE FIELD repo           ON vocab_cache TYPE string",
-    "DEFINE FIELD symbols        ON vocab_cache TYPE array DEFAULT []",
+    "DEFINE FIELD symbols        ON vocab_cache FLEXIBLE TYPE array DEFAULT []",
     "DEFINE FIELD hit_count      ON vocab_cache TYPE int DEFAULT 0",
     "DEFINE FIELD last_hit       ON vocab_cache TYPE datetime DEFAULT time::now()",
     "DEFINE INDEX idx_vocab_query ON vocab_cache FIELDS query_text SEARCH ANALYZER biz_analyzer BM25(1.2, 0.75)",
@@ -173,9 +176,23 @@ async def _migrate_v0_to_v1(client: LedgerClient) -> None:
     logger.info("[migration] v0 → v1: source_span table + yields edge (non-breaking)")
 
 
+async def _migrate_v1_to_v2(client: LedgerClient) -> None:
+    """v1 → v2: vocab_cache.symbols needs FLEXIBLE TYPE array for nested objects.
+
+    Re-define the field so existing DBs can store code_region-shaped dicts.
+    init_schema() already includes the new DEFINE, but existing DBs may have
+    the old strict TYPE array which strips nested objects.
+    """
+    await client.execute(
+        "DEFINE FIELD symbols ON vocab_cache FLEXIBLE TYPE array DEFAULT []",
+    )
+    logger.info("[migration] v1 → v2: vocab_cache.symbols → FLEXIBLE TYPE array")
+
+
 # Registry: version → migration function that brings DB from version-1 to version
 _MIGRATIONS: dict[int, ...] = {
     1: _migrate_v0_to_v1,
+    2: _migrate_v1_to_v2,
 }
 
 

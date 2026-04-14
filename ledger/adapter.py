@@ -26,10 +26,12 @@ from .queries import (
     relate_implements,
     relate_maps_to,
     relate_yields,
+    lookup_vocab_cache,
     search_by_bm25,
     update_intent_status,
     update_region_hash,
     upsert_source_cursor,
+    upsert_vocab_cache,
     upsert_code_region,
     upsert_intent,
     upsert_source_span,
@@ -98,6 +100,25 @@ class SurrealDBLedgerAdapter:
         """BM25 search on intent descriptions."""
         await self._ensure_connected()
         return await search_by_bm25(self._client, query, max_results, min_confidence)
+
+    async def lookup_vocab_cache(
+        self,
+        query_text: str,
+        repo: str,
+    ) -> list[dict]:
+        """Check vocab_cache for cached grounding results."""
+        await self._ensure_connected()
+        return await lookup_vocab_cache(self._client, query_text, repo)
+
+    async def upsert_vocab_cache(
+        self,
+        query_text: str,
+        repo: str,
+        symbols: list[dict],
+    ) -> None:
+        """Cache grounded code_regions for a query in vocab_cache."""
+        await self._ensure_connected()
+        await upsert_vocab_cache(self._client, query_text, repo, symbols)
 
     async def get_decisions_for_file(self, file_path: str) -> list[dict]:
         """Reverse traversal: all decisions touching symbols in file_path."""
@@ -346,7 +367,14 @@ class SurrealDBLedgerAdapter:
                 regions_linked += 1
 
                 # intent → symbol → code_region edges
-                await relate_maps_to(self._client, intent_id, symbol_id)
+                provenance = {}
+                grounding_tier = region_data.get("grounding_tier")
+                if grounding_tier is not None:
+                    provenance["grounding_tier"] = grounding_tier
+                    provenance["method"] = "auto_ground"
+                await relate_maps_to(
+                    self._client, intent_id, symbol_id, provenance=provenance,
+                )
                 await relate_implements(self._client, symbol_id, region_id)
 
             # Update intent status to pending (has regions now)

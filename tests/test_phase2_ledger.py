@@ -267,9 +267,11 @@ async def test_ungrounded_intent_has_correct_status(monkeypatch, surreal_url):
         }],
     })
 
-    ctx = _ctx()
-    result = await handle_decision_status(ctx, filter="ungrounded")
-    descs = [d.description for d in result.decisions]
+    # Query the ledger directly — handle_decision_status auto-syncs via
+    # link_commit which triggers _reground_ungrounded, potentially changing
+    # the status before we can assert on it.
+    ungrounded = await ledger.get_all_decisions(filter="ungrounded")
+    descs = [d.get("description", "") for d in ungrounded]
     assert any(desc in d for d in descs), (
         f"Expected {desc!r} in ungrounded filter. Got: {descs}"
     )

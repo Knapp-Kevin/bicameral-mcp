@@ -214,6 +214,75 @@ async def search_by_bm25(
     return _normalize_decisions(rows)
 
 
+# ── vocab_cache: grounding reuse cache ─────────────────────────────────
+
+
+async def lookup_vocab_cache(
+    client: LedgerClient,
+    query_text: str,
+    repo: str,
+    max_results: int = 3,
+) -> list[dict]:
+    """BM25 lookup on vocab_cache for cached grounding results.
+
+    Returns the ``symbols`` array from the top matching cache entry
+    (a list of code_region-shaped dicts). Empty list on miss.
+
+    On hit, increments hit_count and refreshes last_hit for LRU tracking.
+    """
+    rows = await client.query(
+        """
+        SELECT *
+        FROM vocab_cache
+        WHERE query_text @0@ $query
+            AND repo = $repo
+        LIMIT $max_results
+        """,
+        {"query": query_text, "repo": repo, "max_results": max_results},
+    )
+    if not rows:
+        return []
+
+    top = rows[0]
+    top_id = top.get("id")
+    if top_id:
+        await client.query(
+            f"UPDATE {top_id} SET hit_count += 1, last_hit = time::now()",
+        )
+
+    return top.get("symbols") or []
+
+
+async def upsert_vocab_cache(
+    client: LedgerClient,
+    query_text: str,
+    repo: str,
+    symbols: list[dict],
+) -> None:
+    """Write or update a vocab_cache entry.
+
+    Stores code_region-shaped dicts in the symbols array for later
+    reuse. Line numbers may go stale but are validated against the
+    live SymbolDB index on every cache hit (see _validate_cached_regions).
+    """
+    await client.query(
+        """
+        UPSERT vocab_cache SET
+            query_text = $query_text,
+            repo       = $repo,
+            symbols    = $symbols,
+            hit_count  = IF hit_count THEN hit_count + 1 ELSE 1 END,
+            last_hit   = time::now()
+        WHERE query_text = $query_text AND repo = $repo
+        """,
+        {
+            "query_text": query_text,
+            "repo": repo,
+            "symbols": symbols,
+        },
+    )
+
+
 async def get_decisions_for_file(
     client: LedgerClient,
     file_path: str,
@@ -412,11 +481,13 @@ async def relate_maps_to(
     intent_id: str,
     symbol_id: str,
     confidence: float = 0.8,
+    provenance: dict | None = None,
 ) -> None:
     """Create intent → maps_to → symbol edge (idempotent via DELETE + CREATE)."""
+    prov = provenance or {}
     await client.execute(
-        f"RELATE {intent_id}->maps_to->{symbol_id} SET confidence=$c, created_at=time::now()",
-        {"c": confidence},
+        f"RELATE {intent_id}->maps_to->{symbol_id} SET confidence=$c, provenance=$p, created_at=time::now()",
+        {"c": confidence, "p": prov},
     )
 
 
