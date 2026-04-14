@@ -472,4 +472,34 @@ TRANSCRIPT_SOURCES: dict[str, dict] = {
         "transcript": "pilot/ml/data/transcripts/vendure-search-reindexing.md",
         "repo_key": "vendure",
     },
+
+    # ── Adversarial corpus (M1 stress categories) ─────────────────
+    # These transcripts deliberately exercise failure modes documented in
+    # visual-plans/quality_metrics/m1-decision-relevance.html. They are
+    # registered under repo_key="adversarial" so the runner reports them
+    # as their own group; the CI workflow aliases that key to the cloned
+    # medusa tree (any indexed code works — adversarial transcripts test
+    # extraction quality, not grounding precision against a specific
+    # codebase). Ground truth for each lives at
+    # pilot/mcp/tests/fixtures/extraction/adv-*.json.
+    "adv-strat-fake": {
+        "transcript": "pilot/ml/data/transcripts/adv-strat-fake.md",
+        "repo_key": "adversarial",
+    },
+    "adv-vocab-collide": {
+        "transcript": "pilot/ml/data/transcripts/adv-vocab-collide.md",
+        "repo_key": "adversarial",
+    },
+    "adv-density-extreme": {
+        "transcript": "pilot/ml/data/transcripts/adv-density-extreme.md",
+        "repo_key": "adversarial",
+    },
+    "adv-offtopic-mix": {
+        "transcript": "pilot/ml/data/transcripts/adv-offtopic-mix.md",
+        "repo_key": "adversarial",
+    },
+    "adv-reversal": {
+        "transcript": "pilot/ml/data/transcripts/adv-reversal.md",
+        "repo_key": "adversarial",
+    },
 }
