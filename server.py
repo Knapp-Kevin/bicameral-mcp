@@ -40,6 +40,7 @@ from handlers.ingest import handle_ingest
 from handlers.link_commit import handle_link_commit
 from handlers.preflight import handle_preflight
 from handlers.reset import handle_reset
+from handlers.scan_branch import handle_scan_branch
 from handlers.search_decisions import handle_search_decisions
 from handlers.update import get_update_notice, handle_update
 
@@ -132,9 +133,13 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="bicameral.drift",
             description=(
-                "Code review check. Given a file path, surface all decisions that touch "
-                "symbols in that file — highlighting any that diverge from current content. "
-                "Use before committing (use_working_tree=true) or during PR review (false). "
+                "DEPRECATED in v0.4.17 — prefer bicameral.scan_branch for multi-file drift "
+                "audits; this tool still works for single-file scope. Removal planned for v0.4.18. "
+                "Code review check for ONE file: given a file path, surface all decisions "
+                "that touch symbols in that file — highlighting any that diverge from current "
+                "content. Fire only when the user explicitly names a single file. For "
+                "'what's drifted on this branch' / 'scan my PR' / any whole-branch check, "
+                "use bicameral.scan_branch. "
                 "Slash alias: /bicameral:drift"
             ),
             inputSchema={
@@ -356,6 +361,44 @@ async def list_tools() -> list[Tool]:
                 "required": ["topic"],
             },
         ),
+        Tool(
+            name="bicameral.scan_branch",
+            description=(
+                "Audit every decision that touches any file your branch changed between a base ref "
+                "(default: the authoritative branch, usually main) and a head ref (default: HEAD). "
+                "Deduplicates decisions across files — a decision touching three files shows up once. "
+                "This is the multi-file counterpart to bicameral.drift: use it when the user asks "
+                "'what's drifted on this branch', 'scan my PR', 'is anything broken before I merge', "
+                "or any whole-branch discrepancy check. For single-file drift against a specific "
+                "file the user named, use bicameral.drift instead. "
+                "Slash alias: /bicameral:scan-branch"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "base_ref": {
+                        "type": "string",
+                        "description": (
+                            "Git ref to diff from — branch name, tag, or SHA. Defaults to the "
+                            "BICAMERAL_AUTHORITATIVE_REF env var, falling back to 'main'."
+                        ),
+                    },
+                    "head_ref": {
+                        "type": "string",
+                        "default": "HEAD",
+                        "description": "Git ref to diff to — usually HEAD or the tip of the branch under review",
+                    },
+                    "use_working_tree": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "True = include uncommitted working-tree changes (pre-commit sweep). "
+                            "False (default) = compare committed refs only (PR-review posture)."
+                        ),
+                    },
+                },
+            },
+        ),
         # ── Code locator tools (MCP-native) ──────────────────────────
         Tool(
             name="validate_symbols",
@@ -514,6 +557,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 type="text",
                 text=json.dumps({"judgment_payload": None, "topic": arguments["topic"]}),
             )]
+    elif name in ("bicameral.scan_branch", "scan_branch"):
+        result = await handle_scan_branch(
+            ctx,
+            base_ref=arguments.get("base_ref"),
+            head_ref=arguments.get("head_ref"),
+            use_working_tree=arguments.get("use_working_tree", False),
+        )
     # ── Code locator tools ────────────────────────────────────────
     elif name == "validate_symbols":
         data = await asyncio.to_thread(ctx.code_graph.validate_symbols, arguments["candidates"])

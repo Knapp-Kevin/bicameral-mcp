@@ -178,6 +178,43 @@ class DetectDriftResponse(BaseModel):
     undocumented_symbols: list[str]  # symbols in file with no decision mapping
 
 
+# ── Tool 11: /scan_branch — multi-file drift audit (v0.4.17) ────────
+
+
+class ScanBranchResponse(BaseModel):
+    """Response envelope for bicameral.scan_branch(base_ref, head_ref).
+
+    Multi-file drift audit across every file changed between
+    ``base_ref`` and ``head_ref``. The per-decision entry shape
+    matches ``DriftEntry`` exactly (intent_id, description, status,
+    symbol, lines, drift_evidence, source_ref, source_excerpt,
+    meeting_date); the envelope adds the range provenance so the
+    caller can tell head-only fall-through from a real range sweep,
+    and knows when the range was truncated.
+
+    Decisions are **deduped by intent_id** across the full set of
+    changed files — a decision touching three files shows up once,
+    not three times.
+    """
+    base_ref: str               # the ref the scan diffed from (resolved)
+    head_ref: str               # the ref the scan diffed to (resolved)
+    sweep_scope: Literal[
+        "head_only",       # base_ref missing / equal / unresolvable — fell through to head
+        "range_diff",      # default path: files in base..head range
+        "range_truncated", # range exceeded MAX_SWEEP_FILES; capped
+    ]
+    range_size: int = 0         # number of files swept in this run
+    source: Literal["working_tree", "HEAD"]
+    decisions: list[DriftEntry] = []      # deduped by intent_id across all files
+    files_changed: list[str] = []         # the file paths swept
+    drifted_count: int = 0
+    pending_count: int = 0
+    ungrounded_count: int = 0
+    reflected_count: int = 0
+    undocumented_symbols: list[str] = []  # union across all files
+    action_hints: list[ActionHint] = []
+
+
 # ── Tool 4: /link_commit — re-exported here for direct use ───────────
 # (LinkCommitResponse defined above alongside SearchDecisionsResponse)
 

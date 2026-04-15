@@ -178,7 +178,7 @@ payload: {
 }
 ```
 
-Use the natural format in the common case. Fall through to internal format only when you already have verified file/line pins — otherwise you'll bypass auto-grounding and lose the BM25 + graph-fusion mapping.
+Use the natural format in the common case. Fall through to internal format only when you already have verified file/line pins — otherwise you'll bypass auto-grounding and the server can't map decisions to code on its own.
 
 ### 4. Report results
 

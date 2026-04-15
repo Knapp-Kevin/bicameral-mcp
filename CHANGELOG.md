@@ -3,6 +3,103 @@
 All notable changes to bicameral-mcp are tracked here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.17 — 2026-04-15 — `scan_branch` + drift soft-deprecate + jargon lint
+
+Three things land together in a small release. Motivated by a live
+v0.4.16 dogfood where the agent kept recommending `bicameral.drift`
+file-by-file to investigate discrepancies (fan out N calls, N turns
+of LLM cost), because no tool in the set handled "what's wrong
+across the whole branch" in a single call.
+
+### Added
+
+- **`bicameral.scan_branch(base_ref?, head_ref?, use_working_tree?)`**
+  — new MCP tool (the 11th). Audits every decision that touches any
+  file changed between `base_ref` (default: `BICAMERAL_AUTHORITATIVE_REF`
+  or `main`) and `head_ref` (default: `HEAD`). Deduplicates decisions
+  by `intent_id` across the full file set — a decision touching
+  three files shows up once, not three times. Reuses the v0.4.11
+  range-diff sweep primitives (`get_changed_files_in_range`,
+  `_MAX_SWEEP_FILES` cap).
+- **`ScanBranchResponse`** Pydantic contract with `base_ref`,
+  `head_ref`, `sweep_scope` (`head_only` / `range_diff` /
+  `range_truncated`), `range_size`, per-status counts, deduped
+  decisions list, files_changed list, undocumented_symbols union,
+  and action_hints.
+- **`handlers/scan_branch.py`** — composition handler that reuses
+  `get_changed_files_in_range` + `ctx.ledger.get_decisions_for_file`
+  + the extracted `raw_decisions_to_drift_entries` helper. Pure
+  deterministic, no LLM.
+- **`handlers/action_hints.generate_hints_for_scan_branch`** — fires
+  `review_drift` + `ground_decision` hints on the new response,
+  same intensity-gated pattern as the existing generators.
+- **`skills/bicameral-scan-branch/SKILL.md`** — trigger phrasings
+  ("what's drifted on this branch", "scan my PR", "review this
+  branch"), rendering rules (drifted first, verbatim source
+  excerpts, hints verbatim), and an explicit "don't fan out
+  parallel drift calls" anti-pattern.
+- **`ledger.status.resolve_ref(ref, repo_path)`** — generic git
+  ref resolver (the existing `resolve_head` now delegates to it).
+  Handles branch names, tags, short SHAs.
+
+### Deprecated
+
+- **`bicameral.drift` — soft-deprecated in v0.4.17**. The tool
+  still works unchanged; the wire contract is preserved. The tool
+  description carries a `DEPRECATED` prefix and the
+  `bicameral-drift` SKILL.md is rewritten to:
+  1. Route multi-file intents to `bicameral.scan_branch`
+  2. Only fire on explicit single-file phrasings
+  3. Explicitly forbid fan-out loops of drift calls as a
+     multi-file workaround
+  Hard removal planned for v0.4.18 alongside `bicameral.doctor`.
+
+### Fixed
+
+- **Backend jargon hygiene lint** — new
+  `tests/test_v0417_jargon_hygiene.py` blocks `BM25`, `tree-sitter`,
+  `SurrealDB`, `RRF`, `Jaccard`, `graph-fusion`, `canonical_id`,
+  `UUIDv5`, `JCS`, `@0@`, `Pydantic` from appearing in any
+  `SKILL.md` file or any `Tool(description=...)` block in
+  `server.py`. Caught three real leftover leaks in the
+  `.claude/skills/` mirror tree that hadn't been re-synced after
+  the v0.4.16 cleanup:
+  - `.claude/skills/bicameral-ingest/SKILL.md` — "BM25 +
+    graph-fusion mapping" still present
+  - `.claude/skills/bicameral-reset/SKILL.md` — "SurrealDB
+    instance" still present
+  All skill mirrors are now byte-identical to their canonical
+  `skills/` counterparts.
+- **`handlers/detect_drift.py` refactor** — extracted
+  `raw_decisions_to_drift_entries(raw_decisions)` as a pure
+  module-level helper. `handle_detect_drift` and the new
+  `handle_scan_branch` both call it, so a per-decision field drift
+  between the two is now impossible by construction.
+
+### Tests
+
+- `tests/test_v0417_scan_branch.py` — 13 tests: honest empty path,
+  head-only fallback when base is unreachable, multi-file dedup by
+  intent_id, status counts match entries, `review_drift` hint fires,
+  `ground_decision` hint fires, range-truncated at `_MAX_SWEEP_FILES`,
+  default base ref env var resolution, working-tree flag threads
+  through, pure helper regression, same-ref integration empty case,
+  full end-to-end single-file range, `handle_detect_drift` regression
+  after the helper extraction.
+- `tests/test_v0417_jargon_hygiene.py` — 4 tests: skill file scan,
+  tool description scan, synthetic-jargon smoke test (guards
+  against no-op regexes), legitimate vocabulary smoke test (guards
+  against over-eager regexes).
+- **53/53 combined regression** across v0.4.17 + v0.4.16 test sets.
+
+### Migration
+
+No schema changes. `bicameral.drift` is fully backward compatible —
+pre-v0.4.17 callers keep working. `bicameral.scan_branch` is
+additive; agents that don't know about it simply don't call it.
+The jargon lint only fails on NEW jargon landing in skill files or
+tool descriptions — existing user-facing text is already clean.
+
 ## 0.4.16 — 2026-04-15 — Caller-Session Gap Judge + Natural-Format Fix
 
 Two things land in this release: the new v0.4.16 gap-judge rubric

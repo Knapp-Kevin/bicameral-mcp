@@ -35,6 +35,7 @@ from __future__ import annotations
 from contracts import (
     ActionHint,
     BriefResponse,
+    ScanBranchResponse,
     SearchDecisionsResponse,
 )
 
@@ -144,6 +145,46 @@ def generate_hints_for_search(
             message=_ground_message(len(ungrounded), guided_mode),
             blocking=guided_mode,
             refs=[m.intent_id for m in ungrounded],
+        ))
+
+    return hints
+
+
+def generate_hints_for_scan_branch(
+    response: ScanBranchResponse,
+    guided_mode: bool,
+) -> list[ActionHint]:
+    """Inspect a ``ScanBranchResponse`` and emit action hints.
+
+    Hints fire whenever findings exist, regardless of ``guided_mode``.
+    The flag controls intensity only (blocking + message tone).
+
+    Kinds:
+      - ``review_drift`` — at least one decision in the scan is drifted
+      - ``ground_decision`` — at least one decision has no code grounding
+    """
+    hints: list[ActionHint] = []
+
+    drifted = [d for d in response.decisions if d.status == "drifted"]
+    if drifted:
+        # Union files touched by each drifted entry. DriftEntry carries
+        # a symbol but not a file_path directly — fall back to the
+        # response-level files_changed list when per-entry file refs
+        # aren't available.
+        hints.append(ActionHint(
+            kind="review_drift",
+            message=_drift_message(len(drifted), guided_mode),
+            blocking=guided_mode,
+            refs=[d.intent_id for d in drifted] + response.files_changed,
+        ))
+
+    ungrounded = [d for d in response.decisions if d.status == "ungrounded"]
+    if ungrounded:
+        hints.append(ActionHint(
+            kind="ground_decision",
+            message=_ground_message(len(ungrounded), guided_mode),
+            blocking=guided_mode,
+            refs=[d.intent_id for d in ungrounded],
         ))
 
     return hints

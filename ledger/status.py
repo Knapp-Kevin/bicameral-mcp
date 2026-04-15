@@ -258,9 +258,23 @@ def get_changed_files_in_range(
 
 def resolve_head(repo_path: str) -> str | None:
     """Return current HEAD SHA."""
+    return resolve_ref("HEAD", repo_path)
+
+
+def resolve_ref(ref: str, repo_path: str) -> str | None:
+    """Return the full SHA for a git ref (HEAD, branch, tag, or short SHA).
+
+    Returns ``None`` when the ref is unreachable (force-pushed branch
+    gone, detached tag removed, shallow clone that doesn't include
+    the base). Callers must treat ``None`` as "ran, unresolvable" —
+    distinct from returning an SHA that happens to match something
+    stale.
+    """
+    if not ref:
+        return None
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "rev-parse", "--verify", ref],
             cwd=Path(repo_path).resolve(),
             capture_output=True,
             text=True,
