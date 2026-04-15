@@ -30,17 +30,93 @@ Bicameral MCP is a local-first [Model Context Protocol](https://spec.modelcontex
 
 ## Table of Contents
 
+- [Quickstart](#quickstart)
 - [The Problem](#the-problem)
 - [Collaboration Modes](#collaboration-modes)
 - [Tool Composition](#tool-composition)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
-- [Quickstart](#quickstart)
 - [MCP Tools Reference](#mcp-tools-reference)
 - [Testing](#testing)
 - [Configuration](#configuration)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## Quickstart
+
+### One-command setup
+
+```bash
+pipx install bicameral-mcp
+bicameral-mcp setup
+```
+
+This launches an interactive wizard that:
+1. Detects your repo (from cwd or prompts you)
+2. Installs the MCP config into Claude Code using your `pipx` binary path
+
+That's it. The server builds its code index on first tool call.
+
+### Manual config
+
+Run from your repo root:
+
+```bash
+# Install
+pipx install bicameral-mcp
+
+# Add to Claude Code
+claude mcp add-json bicameral --scope local '{
+  "command": "bicameral-mcp",
+  "args": [],
+  "env": {
+    "REPO_PATH": "/path/to/your/repo",
+    "SURREAL_URL": "surrealkv:///path/to/your/repo/.bicameral/ledger.db"
+  }
+}'
+```
+
+### Local development
+
+```bash
+# Option A: pipx editable install (puts bicameral-mcp on PATH, uses local source)
+pipx install -e . --force
+
+# Option B: pip editable install (venv-local, includes test deps)
+pip install -e ".[test]"
+```
+
+After either option:
+
+```bash
+bicameral-mcp setup           # interactive config
+bicameral-mcp --smoke-test    # verify all 9 tools register correctly
+bicameral-mcp                 # start MCP server (stdio)
+```
+
+### Verify installation
+
+```bash
+bicameral-mcp --smoke-test
+```
+
+Expected output:
+```
+bicameral-mcp 0.2.13 smoke test passed
+bicameral.status
+bicameral.search
+bicameral.drift
+bicameral.link_commit
+bicameral.ingest
+validate_symbols
+search_code
+get_neighbors
+extract_symbols
+```
+
+No LLM provider credentials needed -- all retrieval is deterministic.
 
 ---
 
@@ -223,82 +299,6 @@ Bicameral is composed of three layers:
 | Fuzzy matching | rapidfuzz | Token-level matching for auto-grounding |
 | Response types | Pydantic v2 | Strict MCP response contracts |
 | Transport | MCP protocol (stdio) | IDE/agent integration |
-
----
-
-## Quickstart
-
-### One-command setup
-
-```bash
-pipx install bicameral-mcp
-bicameral-mcp setup
-```
-
-This launches an interactive wizard that:
-1. Detects your repo (from cwd or prompts you)
-2. Installs the MCP config into Claude Code using your `pipx` binary path
-
-That's it. The server builds its code index on first tool call.
-
-### Manual config
-
-Run from your repo root:
-
-```bash
-# Install
-pipx install bicameral-mcp
-
-# Add to Claude Code
-claude mcp add-json bicameral --scope local '{
-  "command": "bicameral-mcp",
-  "args": [],
-  "env": {
-    "REPO_PATH": "/path/to/your/repo",
-    "SURREAL_URL": "surrealkv:///path/to/your/repo/.bicameral/ledger.db"
-  }
-}'
-```
-
-### Local development
-
-```bash
-# Option A: pipx editable install (puts bicameral-mcp on PATH, uses local source)
-pipx install -e . --force
-
-# Option B: pip editable install (venv-local, includes test deps)
-pip install -e ".[test]"
-```
-
-After either option:
-
-```bash
-bicameral-mcp setup           # interactive config
-bicameral-mcp --smoke-test    # verify all 9 tools register correctly
-bicameral-mcp                 # start MCP server (stdio)
-```
-
-### Verify installation
-
-```bash
-bicameral-mcp --smoke-test
-```
-
-Expected output:
-```
-bicameral-mcp 0.2.13 smoke test passed
-bicameral.status
-bicameral.search
-bicameral.drift
-bicameral.link_commit
-bicameral.ingest
-validate_symbols
-search_code
-get_neighbors
-extract_symbols
-```
-
-No LLM provider credentials needed -- all retrieval is deterministic.
 
 ---
 
