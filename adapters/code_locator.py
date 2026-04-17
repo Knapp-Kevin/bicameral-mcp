@@ -212,11 +212,14 @@ class RealCodeLocatorAdapter:
         #      collapses to BM25-only.
         #   2. Rank symbols within each qualifying file (relevant ones
         #      come first).
-        matched_ids: set[int] = set()
+        matched_scores: dict[int, float] = {}
         if tokens:
             try:
                 validated = self._validate_with_threshold(tokens, fuzzy_threshold)
-                matched_ids = {v["symbol_id"] for v in validated if v.get("symbol_id")}
+                for v in validated:
+                    sid = v.get("symbol_id")
+                    if sid:
+                        matched_scores[sid] = max(matched_scores.get(sid, 0), v["match_score"])
             except Exception as exc:
                 logger.debug("[ground] fuzzy validate failed for '%s': %s", description[:60], exc)
 
@@ -225,9 +228,11 @@ class RealCodeLocatorAdapter:
                 try:
                     rows = db.lookup_by_name(name)
                     for row in rows:
-                        matched_ids.add(row["id"])
+                        matched_scores[row["id"]] = max(matched_scores.get(row["id"], 0), 100.0)
                 except Exception as exc:
                     logger.debug("[ground] symbol name lookup failed for '%s': %s", name, exc)
+
+        matched_ids = set(matched_scores)
 
         # Stage 1: multi-file fused retrieval (FC-2 fix, v0.4.6).
         # Previously this stage took only the top-1 BM25 hit via next(),
@@ -273,7 +278,7 @@ class RealCodeLocatorAdapter:
                     relevant_ids = matched_ids & file_symbol_ids
                     ranked = sorted(
                         file_symbols,
-                        key=lambda r: (r["id"] not in relevant_ids, r["start_line"]),
+                        key=lambda r: (r["id"] not in relevant_ids, -matched_scores.get(r["id"], 0)),
                     )
                     for row in ranked[:per_file_budget]:
                         code_regions.append({
@@ -294,8 +299,9 @@ class RealCodeLocatorAdapter:
         # Unchanged from v0.4.5 semantics.
         if not code_regions and matched_ids:
             try:
+                score_ranked_ids = sorted(matched_scores, key=matched_scores.get, reverse=True)
                 code_regions = self._regions_from_symbol_ids(
-                    sorted(matched_ids)[:max_symbols], db, description,
+                    score_ranked_ids[:max_symbols], db, description,
                 )
             except Exception as exc:
                 logger.warning("[ground] fuzzy fallback failed: %s", exc)
