@@ -52,13 +52,13 @@ def _make_initialized_adapter():
 class TestGroundSingle:
     """Unit tests for _ground_single."""
 
-    def test_stage1_rank_based_file_selection(self):
-        """Stage 1 grounds using rank-based file selection from fused results."""
+    def test_stage2_file_retrieval_with_bm25(self):
+        """Stage 2 grounds using BM25 file retrieval when no fuzzy matches."""
         adapter, db = _make_initialized_adapter()
         sym = _make_symbol_row(1, "authorize", "payments/auth.py")
         db.lookup_by_file.return_value = [sym]
 
-        hits = [{"file_path": "payments/auth.py", "score": 0.02}]
+        hits = [{"file_path": "payments/auth.py", "score": 0.5}]
 
         with patch.object(adapter, "_validate_with_threshold", return_value=[]):
             regions = adapter._ground_single(
@@ -70,6 +70,22 @@ class TestGroundSingle:
         assert len(regions) == 1
         assert regions[0]["symbol"] == "authorize"
         assert regions[0]["file_path"] == "payments/auth.py"
+
+    def test_weak_bm25_scores_filtered_without_fuzzy(self):
+        """BM25 hits below 0.1 are skipped when there are no fuzzy matches."""
+        adapter, db = _make_initialized_adapter()
+
+        hits = [{"file_path": "noise.py", "score": 0.05}]
+
+        with patch.object(adapter, "_validate_with_threshold", return_value=[]):
+            regions = adapter._ground_single(
+                "some query tokens here", db,
+                max_files=2, fuzzy_threshold=80, max_symbols=5,
+                hits=hits,
+            )
+
+        assert regions == []
+        db.lookup_by_file.assert_not_called()
 
     def test_max_files_caps_file_count(self):
         """max_files limits how many distinct files are used from fused results."""
@@ -84,9 +100,9 @@ class TestGroundSingle:
         }.get(fp, [])
 
         hits = [
-            {"file_path": "file_a.py", "score": 0.03},
-            {"file_path": "file_b.py", "score": 0.02},
-            {"file_path": "file_c.py", "score": 0.01},
+            {"file_path": "file_a.py", "score": 0.5},
+            {"file_path": "file_b.py", "score": 0.4},
+            {"file_path": "file_c.py", "score": 0.3},
         ]
 
         with patch.object(adapter, "_validate_with_threshold", return_value=[]):
@@ -118,12 +134,12 @@ class TestGroundSingle:
         assert regions[0]["symbol"] == "processPayment"
 
     def test_max_symbols_respected(self):
-        """Only max_symbols regions returned from Stage 1."""
+        """Only max_symbols regions returned from file retrieval."""
         adapter, db = _make_initialized_adapter()
         syms = [_make_symbol_row(i, f"sym{i}", "big_file.py", i * 10, i * 10 + 5) for i in range(10)]
         db.lookup_by_file.return_value = syms
 
-        hits = [{"file_path": "big_file.py", "score": 0.03}]
+        hits = [{"file_path": "big_file.py", "score": 0.8}]
 
         with patch.object(adapter, "_validate_with_threshold", return_value=[]):
             regions = adapter._ground_single(

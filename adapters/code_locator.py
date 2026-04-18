@@ -242,7 +242,7 @@ class RealCodeLocatorAdapter:
         # Stage 1: fuzzy-symbol direct lookup.
         # When fuzzy matching found symbols, resolve them directly — this is
         # the highest-precision path since matched_scores already rank by
-        # relevance. File-level retrieval (Stage 2) serves as enrichment.
+        # relevance.
         if matched_ids:
             try:
                 score_ranked_ids = sorted(matched_scores, key=matched_scores.get, reverse=True)
@@ -253,9 +253,10 @@ class RealCodeLocatorAdapter:
                 logger.warning("[ground] fuzzy direct lookup failed: %s", exc)
 
         # Stage 2: file-level fused retrieval.
-        # When Stage 1 found nothing (no fuzzy matches or lookup failed),
-        # fall back to BM25 + graph retrieval to find relevant files.
-        if not code_regions:
+        # - When Stage 1 found symbols: enriches with additional files from
+        #   BM25+graph that Stage 1 may have missed (cross-file features).
+        # - When Stage 1 found nothing: primary retrieval path via BM25.
+        if len(code_regions) < max_symbols:
             try:
                 if matched_ids:
                     fused = self.search_code(description, symbol_ids=sorted(matched_ids))
@@ -265,9 +266,12 @@ class RealCodeLocatorAdapter:
                 logger.debug("[ground] fused search failed for '%s': %s — falling back to BM25-only", description[:60], exc)
                 fused = hits
 
+            covered_files = {r["file_path"] for r in code_regions}
             qualifying_files: list[str] = []
-            seen_files: set[str] = set()
+            seen_files: set[str] = set(covered_files)
             for h in fused:
+                if not matched_ids and h.get("score", 0) < 0.1:
+                    continue
                 fp = h.get("file_path", "")
                 if fp and fp not in seen_files:
                     seen_files.add(fp)
@@ -275,8 +279,9 @@ class RealCodeLocatorAdapter:
                 if len(qualifying_files) >= max_files:
                     break
 
-            if qualifying_files:
-                per_file_budget = max(1, max_symbols // len(qualifying_files))
+            remaining_budget = max_symbols - len(code_regions)
+            if qualifying_files and remaining_budget > 0:
+                per_file_budget = max(1, remaining_budget // len(qualifying_files))
                 try:
                     for fp in qualifying_files:
                         file_symbols = db.lookup_by_file(fp)
@@ -300,7 +305,7 @@ class RealCodeLocatorAdapter:
                         if len(code_regions) >= max_symbols:
                             break
                 except Exception as exc:
-                    logger.warning("[ground] multi-file ranking failed for '%s': %s", description[:60], exc)
+                    logger.warning("[ground] file-level retrieval failed for '%s': %s", description[:60], exc)
                 code_regions = code_regions[:max_symbols]
 
         return code_regions

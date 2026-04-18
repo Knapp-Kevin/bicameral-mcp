@@ -137,15 +137,19 @@ def _adapter_with_fakes(
 # ── Tests ────────────────────────────────────────────────────────────
 
 
-def test_ground_single_uses_fuzzy_direct_lookup_when_matches_exist():
+def test_ground_single_fuzzy_direct_lookup_takes_priority():
     """When fuzzy validation returns symbol IDs, ``_ground_single`` must
-    resolve them directly via Stage 1 (fuzzy-symbol direct lookup) without
-    needing file-level BM25/RRF retrieval. This bypasses the BM25 noise
-    that could promote irrelevant files (the original FC-2 pathology).
+    resolve them directly via Stage 1 (fuzzy-symbol direct lookup) as the
+    PRIMARY results. Stage 2 (file-level retrieval) enriches with additional
+    files but cannot displace the fuzzy-matched symbols.
     """
     bm25_hits = [
         {"file_path": "wrong_test_fixture.ts", "score": 0.9},
         {"file_path": "real_component.tsx", "score": 0.4},
+    ]
+    fused_hits = [
+        {"file_path": "wrong_test_fixture.ts", "score": 0.95},
+        {"file_path": "real_component.tsx", "score": 0.5},
     ]
     symbols = {
         "real_component.tsx": [
@@ -158,7 +162,7 @@ def test_ground_single_uses_fuzzy_direct_lookup_when_matches_exist():
 
     adapter, call_log = _adapter_with_fakes(
         bm25_hits=bm25_hits,
-        fused_hits=[],
+        fused_hits=fused_hits,
         symbols_by_file=symbols,
         fuzzy_symbol_ids=[1],
     )
@@ -172,16 +176,10 @@ def test_ground_single_uses_fuzzy_direct_lookup_when_matches_exist():
         hits=bm25_hits,
     )
 
-    # Stage 1 (fuzzy direct) should resolve without calling search_code
-    assert call_log == [], (
-        f"With fuzzy matches, search_code should not be called. "
-        f"Got calls: {call_log}"
-    )
-
     assert len(regions) >= 1
     top_file = regions[0]["file_path"]
     assert top_file == "real_component.tsx", (
-        f"Expected fuzzy-matched symbol to resolve to real_component.tsx, "
+        f"Expected fuzzy-matched symbol at rank 1, "
         f"got {top_file}. Full regions: {regions}"
     )
 
