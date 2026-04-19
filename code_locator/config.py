@@ -18,6 +18,8 @@ class CodeLocatorConfig:
 
     # BM25
     bm25_backend: str = "bm25s"  # "bm25s" for MVP, "zoekt" post-MVP
+    bm25_k1: float = 1.5
+    bm25_b: float = 0.75
 
     # RRF
     rrf_k: int = 40

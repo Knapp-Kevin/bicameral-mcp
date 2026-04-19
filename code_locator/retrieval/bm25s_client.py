@@ -65,7 +65,7 @@ class Bm25sClient(BM25Search):
         self._doc_ids: list[str] = []
         self._loaded = False
 
-    def index(self, repo_path: str, output_dir: str, symbol_db=None) -> None:
+    def index(self, repo_path: str, output_dir: str, symbol_db=None, k1: float = 1.5, b: float = 0.75) -> None:
         """Build BM25 index from source files and persist to disk.
 
         If symbol_db is provided, prepend expanded symbol names per file
@@ -106,7 +106,7 @@ class Bm25sClient(BM25Search):
             return
 
         tokens = bm25s.tokenize(documents, stopwords="en", show_progress=False)
-        bm25 = bm25s.BM25()
+        bm25 = bm25s.BM25(k1=k1, b=b)
         bm25.index(tokens, show_progress=False)
 
         os.makedirs(output_dir, exist_ok=True)

@@ -221,7 +221,7 @@ def rebuild_index(repo_path: str, config, force: bool = False) -> None:
     from code_locator.indexing.sqlite_store import SymbolDB as _SymDB
     _sdb = _SymDB(config.sqlite_db)
     bm25 = Bm25sClient()
-    bm25.index(repo, index_dir, symbol_db=_sdb)
+    bm25.index(repo, index_dir, symbol_db=_sdb, k1=config.bm25_k1, b=config.bm25_b)
     _sdb.close()
     record_index_state(config.sqlite_db, repo)
 
