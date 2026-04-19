@@ -47,8 +47,9 @@ def _is_relevant(region: dict, expected_symbols: set[str], expected_files: list[
     """Check if a grounded code_region is relevant (symbol match OR file pattern match)."""
     sym = region.get("symbol", "")
     fp = region.get("file_path", "")
-    bare = sym.rsplit(".", 1)[1] if "." in sym else sym
-    return sym in expected_symbols or bare in expected_symbols or any(pat in fp for pat in expected_files)
+    parts_lower = {p.lower() for p in sym.split(".") if p} | {sym.lower()}
+    expected_lower = {s.lower() for s in expected_symbols}
+    return bool(parts_lower & expected_lower) or any(pat in fp for pat in expected_files)
 
 
 def evaluate(
@@ -112,8 +113,9 @@ def evaluate(
             fp = region.get("file_path", "")
             if sym:
                 found_symbols.add(sym)
-                if "." in sym:
-                    found_symbols.add(sym.rsplit(".", 1)[1])
+                for part in sym.split("."):
+                    if part:
+                        found_symbols.add(part)
             found_files.add(fp)
 
             if _is_relevant(region, expected_symbols, expected_files) and first_relevant_rank is None:
@@ -124,9 +126,11 @@ def evaluate(
         irrelevant_in_top_k = len(top_regions) - relevant_in_top_k
         precision = relevant_in_top_k / len(top_regions) if top_regions else 0
 
-        # Recall: fraction of expected symbols found in grounded regions
-        matched_symbols = expected_symbols & found_symbols
-        recall = len(matched_symbols) / len(expected_symbols) if expected_symbols else 0
+        # Recall: fraction of expected symbols found (case-insensitive)
+        expected_lower = {s.lower() for s in expected_symbols}
+        found_lower = {s.lower() for s in found_symbols}
+        matched_count = len(expected_lower & found_lower)
+        recall = matched_count / len(expected_symbols) if expected_symbols else 0
 
         # MRR: 1/rank of first relevant region
         mrr = (1.0 / first_relevant_rank) if first_relevant_rank else 0

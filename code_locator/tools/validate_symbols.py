@@ -77,12 +77,19 @@ class ValidateSymbolsTool:
         scored.sort(key=lambda x: x[3], reverse=True)
         survivors = scored[:100]
 
-        # Stage 2: Precise re-rank with WRatio on survivors
+        _SCORERS = {
+            "WRatio": fuzz.WRatio,
+            "token_set_ratio": fuzz.token_set_ratio,
+            "partial_ratio": fuzz.partial_ratio,
+        }
+        scorer = _SCORERS.get(self.config.fuzzy_scorer, fuzz.WRatio)
+
+        # Stage 2: Precise re-rank with configurable scorer on survivors
         reranked = []
         for sym_id, name, qualified_name, _ in survivors:
             score = max(
-                fuzz.WRatio(candidate_lower, name.lower()),
-                fuzz.WRatio(candidate_lower, qualified_name.lower()),
+                scorer(candidate_lower, name.lower()),
+                scorer(candidate_lower, qualified_name.lower()),
             )
 
             # Single-word candidates: require substring containment
