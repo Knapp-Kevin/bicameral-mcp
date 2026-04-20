@@ -41,6 +41,7 @@ from handlers.ingest import handle_ingest
 from handlers.link_commit import handle_link_commit
 from handlers.preflight import handle_preflight
 from handlers.reset import handle_reset
+from handlers.resolve_compliance import handle_resolve_compliance
 from handlers.scan_branch import handle_scan_branch
 from handlers.search_decisions import handle_search_decisions
 from handlers.update import get_update_notice, handle_update
@@ -373,6 +374,82 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="bicameral.resolve_compliance",
+            description=(
+                "Caller-LLM verification write-back (v0.4.21+). Single tool for every "
+                "compliance verdict the caller LLM produces — ingest-time grounding, "
+                "drift detection, re-grounding after rename, supersession, divergence. "
+                "Receives a batch of verdicts the caller LLM evaluated against the "
+                "pending_compliance_checks payload from a prior link_commit / ingest "
+                "auto-chain response, and persists them in the compliance_check cache "
+                "keyed on (intent_id, region_id, content_hash). Status of affected "
+                "intents is NOT written here — it's projected at next read from the "
+                "cache. Idempotent: replaying the same batch is a no-op. Unknown "
+                "intent/region IDs are returned as structured rejections (not "
+                "exceptions) so the caller can retry the accepted subset. The server "
+                "never calls an LLM — every semantic judgment lives in the caller's "
+                "session. Slash alias: /bicameral:resolve_compliance"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "phase": {
+                        "type": "string",
+                        "enum": ["ingest", "drift", "regrounding", "supersession", "divergence"],
+                        "description": (
+                            "Phase tag the compliance_check rows are written under. "
+                            "Match the phase field on the PendingComplianceCheck "
+                            "entries you're resolving — group by phase if a single "
+                            "response mixes them, and call this tool once per phase."
+                        ),
+                    },
+                    "verdicts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "intent_id": {"type": "string"},
+                                "region_id": {"type": "string"},
+                                "content_hash": {
+                                    "type": "string",
+                                    "description": (
+                                        "Echo the content_hash from the corresponding "
+                                        "PendingComplianceCheck verbatim — this is the "
+                                        "cache key the verdict will be stored under."
+                                    ),
+                                },
+                                "compliant": {"type": "boolean"},
+                                "confidence": {
+                                    "type": "string",
+                                    "enum": ["high", "medium", "low"],
+                                },
+                                "explanation": {
+                                    "type": "string",
+                                    "description": "One-sentence rationale for audit",
+                                },
+                            },
+                            "required": [
+                                "intent_id",
+                                "region_id",
+                                "content_hash",
+                                "compliant",
+                                "confidence",
+                                "explanation",
+                            ],
+                        },
+                    },
+                    "commit_hash": {
+                        "type": "string",
+                        "description": (
+                            "Optional provenance — the commit SHA that triggered the "
+                            "verification (typically passed for phase='drift')."
+                        ),
+                    },
+                },
+                "required": ["phase", "verdicts"],
+            },
+        ),
+        Tool(
             name="bicameral.doctor",
             description=(
                 "Auto-detecting health check. Picks the right scope for the user's intent "
@@ -572,6 +649,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 type="text",
                 text=json.dumps({"judgment_payload": None, "topic": arguments["topic"]}),
             )]
+    elif name in ("bicameral.resolve_compliance", "resolve_compliance"):
+        result = await handle_resolve_compliance(
+            ctx,
+            phase=arguments["phase"],
+            verdicts=arguments["verdicts"],
+            commit_hash=arguments.get("commit_hash"),
+        )
     elif name in ("bicameral.scan_branch", "scan_branch"):
         result = await handle_scan_branch(
             ctx,

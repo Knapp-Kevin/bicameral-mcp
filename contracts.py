@@ -86,6 +86,64 @@ class DecisionMatch(BaseModel):
     meeting_date: str = ""
 
 
+class ComplianceVerdict(BaseModel):
+    """One caller-LLM judgment to write back to the compliance cache.
+
+    The caller receives a ``PendingComplianceCheck`` from the drift sweep,
+    evaluates the ``code_body`` against the ``intent_description``, and
+    returns this verdict via ``bicameral.resolve_compliance``. The
+    ``content_hash`` is echoed verbatim from the pending check so the
+    cache row lands keyed on the exact code shape that was evaluated.
+
+    Plan: 2026-04-20-ingest-time-verification.md (Phase 3).
+    """
+    intent_id: str
+    region_id: str
+    content_hash: str            # echoed from PendingComplianceCheck.content_hash
+    compliant: bool
+    confidence: Literal["high", "medium", "low"]
+    explanation: str             # one-sentence rationale for audit trail
+    # Reserved for supersession / divergence phases (out of scope for v0.4.21):
+    phase_metadata: dict = {}
+
+
+class ResolveComplianceRejection(BaseModel):
+    """Structured rejection for a verdict that failed input validation.
+
+    Returned (not raised) so the caller can retry the accepted subset
+    without losing already-validated work.
+    """
+    intent_id: str
+    region_id: str
+    reason: Literal[
+        "unknown_intent_id",
+        "unknown_region_id",
+        "invalid_content_hash",
+    ]
+    detail: str = ""
+
+
+class ResolveComplianceAccepted(BaseModel):
+    intent_id: str
+    region_id: str
+    phase: str
+    compliant: bool
+
+
+class ResolveComplianceResponse(BaseModel):
+    """Response envelope for ``bicameral.resolve_compliance``.
+
+    Idempotency: replaying the same batch produces the same response
+    shape — the UNIQUE(intent_id, region_id, content_hash) index on
+    compliance_check rejects duplicate writes silently (treated as
+    success). Status of affected intents is NOT written by this tool;
+    it's projected at next read from the cache the verdicts populate.
+    """
+    phase: Literal["ingest", "drift", "regrounding", "supersession", "divergence"]
+    accepted: list[ResolveComplianceAccepted] = []
+    rejected: list[ResolveComplianceRejection] = []
+
+
 class PendingComplianceCheck(BaseModel):
     """One verification job batched for the caller LLM to resolve.
 

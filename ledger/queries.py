@@ -656,6 +656,66 @@ async def upsert_code_region(
     return str(rows[0].get("id", "")) if rows else ""
 
 
+async def upsert_compliance_check(
+    client: LedgerClient,
+    intent_id: str,
+    region_id: str,
+    content_hash: str,
+    compliant: bool,
+    confidence: str,
+    explanation: str,
+    phase: str,
+    commit_hash: str = "",
+) -> bool:
+    """Write a compliance_check row keyed on (intent_id, region_id, content_hash).
+
+    Returns ``True`` when the row was written, ``False`` when a row for
+    the exact tuple already existed (idempotent replay path). Treats the
+    UNIQUE-violation rejection as success — first-write-wins semantics
+    for caller verdicts. If the caller wants to overwrite a verdict they
+    must delete the existing row first.
+
+    Plan: 2026-04-20-ingest-time-verification.md (Phase 3).
+    """
+    try:
+        await client.execute(
+            "CREATE compliance_check SET intent_id = $i, region_id = $r, "
+            "content_hash = $h, compliant = $c, confidence = $cf, "
+            "explanation = $e, phase = $p, commit_hash = $cm",
+            {
+                "i": intent_id,
+                "r": region_id,
+                "h": content_hash,
+                "c": compliant,
+                "cf": confidence,
+                "e": explanation,
+                "p": phase,
+                "cm": commit_hash,
+            },
+        )
+        return True
+    except LedgerError as exc:
+        if "already contains" not in str(exc):
+            raise
+        return False
+
+
+async def intent_exists(client: LedgerClient, intent_id: str) -> bool:
+    """Return True iff an intent row exists with the given record id."""
+    rows = await client.query(
+        f"SELECT id FROM {intent_id} LIMIT 1",
+    )
+    return bool(rows)
+
+
+async def region_exists(client: LedgerClient, region_id: str) -> bool:
+    """Return True iff a code_region row exists with the given record id."""
+    rows = await client.query(
+        f"SELECT id FROM {region_id} LIMIT 1",
+    )
+    return bool(rows)
+
+
 async def get_compliance_verdict(
     client: LedgerClient,
     intent_id: str,
