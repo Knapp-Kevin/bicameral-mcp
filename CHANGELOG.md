@@ -3,6 +3,50 @@
 All notable changes to bicameral-mcp are tracked here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.21 — 2026-04-20 — bicameral.resolve_compliance (caller-LLM verdict write-back)
+
+Closes the end-to-end verification loop v0.4.20 opened. The drift sweep
+emits `pending_compliance_checks`; the caller LLM evaluates them; this
+new tool writes the verdicts back. Status flips from PENDING to
+REFLECTED (or DRIFTED) on the next read.
+
+### Added — `bicameral.resolve_compliance` MCP tool
+
+- `bicameral.resolve_compliance(phase, verdicts[], commit_hash?)` —
+  the single caller-LLM verification write-back tool. One tool for
+  every verification flow (ingest, drift, regrounding, supersession,
+  divergence) — phase is a routing label, not a tool discriminator.
+- Verdict shape: `{intent_id, region_id, content_hash, compliant,
+  confidence, explanation}`. `content_hash` is echoed verbatim from the
+  `PendingComplianceCheck` the caller is resolving, so the cache row
+  lands keyed on the exact code shape that was evaluated.
+- Idempotent via the UNIQUE cache-key index — replaying the same batch
+  is a silent no-op.
+- Structured rejections for unknown intent / region IDs (returned, not
+  raised), so callers can retry the accepted subset without losing work.
+
+### Behavior — status becomes achievable again
+
+Post-v0.4.20 everything projected as PENDING because the cache was
+empty and there was no way to populate it. With `resolve_compliance`
+shipped, the caller-LLM → server → cache loop is closed. Status
+transitions users now see:
+
+- PENDING → REFLECTED — compliant verdict for the current code shape.
+- PENDING → DRIFTED — non-compliant verdict (the caller rejected the
+  candidate).
+- DRIFTED → PENDING — code changed; cache miss re-emits a pending check.
+- PENDING → PENDING — verdict unavailable (caller hasn't responded yet).
+
+### Known caveat — multi-region aggregation
+
+When an intent has multiple regions, `resolve_compliance` writes
+`intent.status` with last-verdict-wins within a batch. Correct
+aggregation (any-uncompliant-drifts-the-intent) still requires the
+drift-sweep loop across all regions, which only runs when HEAD advances.
+Tracked as a follow-up — most current decisions are single-region, so
+this is rarely user-visible.
+
 ## 0.4.20 — 2026-04-20 — unified compliance verification (cache-aware status, pending checks)
 
 The grounding pipeline used to silently promote BM25 candidates to
