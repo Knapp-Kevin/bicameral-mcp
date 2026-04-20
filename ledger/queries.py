@@ -656,6 +656,31 @@ async def upsert_code_region(
     return str(rows[0].get("id", "")) if rows else ""
 
 
+async def get_compliance_verdict(
+    client: LedgerClient,
+    intent_id: str,
+    region_id: str,
+    content_hash: str,
+) -> dict | None:
+    """Return the cached LLM verdict for this exact code shape, or None.
+
+    The cache key is ``(intent_id, region_id, content_hash)``. When a
+    verdict exists, ``derive_status`` can project REFLECTED or DRIFTED
+    without a new LLM call. When it doesn't, the drift sweep emits a
+    pending_compliance_check for the caller LLM to resolve.
+
+    Plan: 2026-04-20-ingest-time-verification.md (Phase 2).
+    """
+    rows = await client.query(
+        "SELECT compliant, confidence, explanation, phase, checked_at "
+        "FROM compliance_check "
+        "WHERE intent_id = $i AND region_id = $r AND content_hash = $h "
+        "LIMIT 1",
+        {"i": intent_id, "r": region_id, "h": content_hash},
+    )
+    return rows[0] if rows else None
+
+
 async def relate_maps_to(
     client: LedgerClient,
     intent_id: str,
