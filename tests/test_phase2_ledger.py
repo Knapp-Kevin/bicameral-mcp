@@ -198,9 +198,13 @@ async def test_link_commit_idempotent(monkeypatch, surreal_url):
         f"Second link_commit(HEAD) must return 'already_synced', got {r2.reason!r}"
     )
     assert r2.synced is True
-    assert r2.regions_updated == 0
-    assert r2.decisions_reflected == 0
-    assert r2.decisions_drifted == 0
+    # v0.4.8 dedup guard: cached response forwards the first sync's real
+    # counters (B23) so downstream ``sync_status`` consumers don't see
+    # synthetic zeros. Idempotency is asserted via ``reason`` + counter
+    # equality with r1, not by zeros.
+    assert r2.regions_updated == r1.regions_updated
+    assert r2.decisions_reflected == r1.decisions_reflected
+    assert r2.decisions_drifted == r1.decisions_drifted
 
 
 @pytest.mark.phase2
