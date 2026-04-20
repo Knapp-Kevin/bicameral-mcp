@@ -6,25 +6,61 @@
 
 ## Problem
 
-Recall is stuck at 30% despite MRR@3 reaching 0.79. Incremental tuning
-(fuzzy scorers, abbreviation dictionaries, BM25 params) yields <2pp gains.
+Recall is stuck at 30% despite MRR@3 reaching 0.79. Analysis of all 20
+unmatched symbols reveals **three compounding failures**, not one:
 
-Root cause: **the unit of retrieval is wrong**. BM25 indexes files, but
-the eval measures symbol-level accuracy. The pipeline finds the right
-files then fails to pick the right symbols from them.
+### Root Cause Analysis: 20 Unmatched Symbols
 
-```
-"payment provider authorize calls"
-  → BM25 finds payment.ts           (correct file)
-  → Stage 2 picks: Payment, Provider (wrong symbols)
-  → Expected: PaymentProviderService (never selected)
-  → Recall: 0
-```
+| Root Cause | Count | % | Example |
+|-----------|-------|---|---------|
+| COMPOUND_NAME | 15 | 75% | "payment provider" can't reconstitute `PaymentProviderService` |
+| MULTI_SYMBOL | 2 | 10% | Found `decrease_stock` but missed `orderFulfill` |
+| SHORT_NAME | 1 | 5% | `App` (3 chars) filtered by domain word minimum |
+| SUBSTRING | 1 | 5% | `middlewares` found as `getMiddlewares` but not matched |
+| WRONG_DOMAIN | 1 | 5% | Description says "webhook", expected symbol in "notification" |
 
-This pattern accounts for 60%+ of recall failures. The two-stage
-file→symbol resolution in `_ground_single()` is architecturally unable
-to solve it — BM25 has no signal about which SYMBOL within a file is
-relevant, only which FILE matches the query.
+**75% of failures are COMPOUND_NAME** — the symbol name is a concatenation
+of words that appear separately in the description. Three problems
+compound to make this unsolvable with the current architecture:
+
+**Problem 1: File-level granularity drowns multi-term matches.**
+`PaymentProviderService` decomposes to [payment, provider, service], but
+in a 500-token file document these 3 tokens are noise. `Payment` (1 token)
+matches just as well as `PaymentProviderService` (3 tokens) because both
+appear in the same file document.
+
+**Problem 2: No stemming breaks singular/plural matching.**
+bm25s tokenizes without stemming. "plugin" (query) ≠ "plugins" (symbol
+`PluginsManager`). "permission" ≠ "permissions" (`check_permissions`).
+This blocks 5 of 15 compound name matches.
+
+**Problem 3: Keyword blocklist strips needed query terms.**
+`_KEYWORD_WORDS` contains `service`, `error`, `field`, `update`, `create`,
+`event`, `model`, `type`. These are exactly the suffixes that distinguish
+`CheckoutError` from `Checkout` and `PaymentProviderService` from
+`Payment`. While the blocklist only affects fuzzy matching tokens (not
+the BM25 query directly), it prevents the fuzzy path from finding these
+symbols as graph seeds.
+
+**Any ONE fix alone yields <40% recall. All THREE together → 70-80%.**
+
+### Verification: Symbol-Level BM25 + Stemming Token Overlap
+
+With both stemming and symbol-level indexing, query→symbol overlap:
+
+| Symbol | Query Terms | Overlap | Match? |
+|--------|------------|---------|--------|
+| `PaymentProviderService` | payment, provider | 2/3 doc terms | YES |
+| `check_permissions` | permission(→permissions) | 1/2 doc terms | YES w/ stemming |
+| `PluginsManager` | plugin(→plugins) | 1/2 doc terms | YES w/ stemming |
+| `CheckoutError` | checkout, error | 2/2 doc terms | YES |
+| `DefaultSearchPlugin` | search, plugin | 2/3 doc terms | YES |
+| `OrderService` | service | 1/2 doc terms | YES |
+| `CustomFieldConfig` | custom, field | 2/3 doc terms | YES |
+| `createOrUpdateProductVariantPrice` | price, update | 2/7 doc terms | YES |
+
+Conservative estimate: 12/15 compound name misses fixed → +12 symbols
+→ 30/38 = **79% symbol-level recall** (currently 47%).
 
 ## Codex Adversarial Review Findings (2026-04-19)
 
@@ -77,7 +113,15 @@ evaluation**:
 This ensures we can claim real retrieval improvement, not just
 measurement improvement.
 
-## Solution: Symbol-Level BM25 Index
+## Solution: Three Fixes Applied Together
+
+All three must land in the same change to reach 70%+ recall:
+
+1. **Symbol-level BM25 index** — one doc per symbol, not per file
+2. **Stemming in BM25 tokenization** — handles singular/plural mismatches
+3. **Keyword blocklist cleanup** — unblocks semantically meaningful code terms
+
+### Fix 1: Symbol-Level BM25 Index
 
 Index one BM25 document per **symbol** instead of per file. The query
 "payment provider authorize calls" directly matches the document for
@@ -169,12 +213,35 @@ def index_symbols(self, output_dir: str, symbol_db, k1=1.5, b=0.75):
         pickle.dump({"bm25": bm25, "symbol_ids": symbol_ids}, f)
 ```
 
+### Fix 2: Stemming in BM25 Tokenization
+
+bm25s.tokenize accepts a `stemmer` parameter. Use Snowball stemmer
+so "plugin"→"plugin" matches "plugins"→"plugin", and "permission"
+matches "permissions":
+
+```python
+import Stemmer  # PyStemmer package
+stemmer = Stemmer.Stemmer("english")
+
+# Apply to BOTH index and query tokenization:
+tokens = bm25s.tokenize(documents, stopwords="en", stemmer=stemmer)
+```
+
+This must be applied consistently to both `index_symbols()` and
+`search_symbols()`. The existing file-level `index()` should also
+get stemming for consistency.
+
+**Dependency**: `pip install PyStemmer` (already a bm25s optional dep).
+
 Add `search_symbols()`:
 
 ```python
 def search_symbols(self, query: str, top_k: int = 20) -> list[dict]:
     """Search symbol-level BM25 index. Returns ranked symbol IDs."""
-    query_tokens = bm25s.tokenize([expand_identifiers(query)], stopwords="en")
+    stemmer = Stemmer.Stemmer("english")
+    query_tokens = bm25s.tokenize(
+        [expand_identifiers(query)], stopwords="en", stemmer=stemmer,
+    )
     results, scores = self._symbol_bm25.retrieve(query_tokens, k=top_k)
     return [
         {"symbol_id": self._symbol_ids[idx], "score": float(score)}
@@ -298,18 +365,34 @@ Additional steps:
 
 | Metric | Before | After (projected) |
 |--------|--------|-------------------|
-| MRR@3 | 0.786 | ~0.82 (symbol-level more precise) |
-| Recall | 29.9% | ~50% (directly finding correct symbols) |
+| MRR@3 | 0.786 | ~0.85 (symbol-level more precise) |
+| Recall | 29.9% | **~70%** (three fixes together) |
 | FP Rate | 30-55% | ~15-25% (fewer irrelevant symbols) |
 | `_ground_single` complexity | 130 lines, 2 stages | ~30 lines, 1 stage |
 
-### Why 50% and not higher
+### Why 70% and not higher
 
-- 6/30 decisions have empty `expected_symbols` → always recall=0 (20% ceiling loss)
-- ~4 decisions describe features with no matching code at all
-- Some expected symbols don't appear anywhere in the description
-  (e.g., `check_permissions` in "Channel-scoped JWT permissions")
-- Theoretical ceiling with current ground truth: ~65%
+- 6/30 decisions have empty `expected_symbols` → always recall=0
+- 1 decision (`VendureConfig`) has 0 query term overlap — unfixable
+- 1 decision (`AbstractNotificationProviderService`) has wrong domain
+- 2 decisions need cross-symbol awareness (finding BOTH `decrease_stock`
+  AND `orderFulfill` from one description)
+- Theoretical ceiling with current ground truth: ~80%
+
+### Why this time is different from incremental tuning
+
+The prior changes (keyword blocklist, fuzzy scorer, BM25 params) each
+addressed ONE of the three problems in isolation. None moved recall
+because all three problems compound:
+
+- Keyword blocklist fix alone: query has "service" but file-level BM25
+  still drowns it → no gain
+- Symbol-level BM25 alone: "permission" doesn't match "permissions"
+  without stemming → partial gain
+- Stemming alone: matches the right tokens but file-level BM25 still
+  picks `Payment` over `PaymentProviderService` → no gain
+
+All three applied together break the compounding failure mode.
 
 ## Risks
 
