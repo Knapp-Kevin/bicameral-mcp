@@ -1,6 +1,6 @@
 {
   "source_ref": "adv-offtopic-mix",
-  "transcript_path": "pilot/ml/data/transcripts/adv-offtopic-mix.md",
+  "transcript_path": "tests/fixtures/transcripts/adv-offtopic-mix.md",
   "repo_key": "adversarial",
   "category": "OFFTOPIC-MIX",
   "generated_by": "claude-opus-4-6[1m]-in-session",

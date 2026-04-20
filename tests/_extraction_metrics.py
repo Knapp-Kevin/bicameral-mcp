@@ -16,9 +16,9 @@ and rapidfuzz otherwise.
 
 Fixture format (one JSON file per transcript):
 
-    pilot/mcp/tests/fixtures/extraction/<source_ref>.json
+    tests/fixtures/extraction/<source_ref>.json
     {
-      "source_ref": "medusa-payment-timeout",
+      "source_ref": "adv-strat-fake",
       "generated_by": "claude-opus-4-6-20251015",
       "generated_at": "2026-04-13T22:30:00Z",
       "decisions": [ {"description": "..."}, ... ],

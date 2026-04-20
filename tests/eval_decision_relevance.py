@@ -7,12 +7,10 @@ emits a per-transcript + per-repo JSON report. Used as a CI regression gate
 (warn-only initially) and as the ruler for Phase 5 skill-spec A/B.
 
 Usage:
-    cd pilot/mcp
     .venv/bin/python tests/eval_decision_relevance.py \\
-        --multi-repo '{"medusa":"test-results/.repos/medusa", \\
-                       "saleor":"test-results/.repos/saleor", \\
-                       "vendure":"test-results/.repos/vendure"}' \\
-        -o test-results/m1-relevance.json
+        --multi-repo '{"adversarial": "test-results/.repos/medusa"}' \\
+        --skill-variant from-skill-md \\
+        -o test-results/m1-adversarial.json
 
 Flags:
     --multi-repo      JSON map repo_key -> repo path. Only source_refs whose
@@ -49,13 +47,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fixtures.expected.decisions import ALL_DECISIONS, TRANSCRIPT_SOURCES
 
-# Repo root (parent of pilot/mcp/) — used to resolve fixture-relative transcript paths.
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# MCP repo root — used to resolve fixture-relative transcript paths.
+MCP_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_transcript(rel_path: str) -> str:
-    """Resolve a transcript path relative to the bicameral repo root."""
-    p = (REPO_ROOT / rel_path).resolve()
+    """Resolve a transcript path relative to the MCP repo root."""
+    p = (MCP_ROOT / rel_path).resolve()
     if not p.exists():
         raise FileNotFoundError(f"transcript not found: {p}")
     return p.read_text(encoding="utf-8")

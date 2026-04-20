@@ -31,11 +31,11 @@ from typing import Any
 
 import httpx
 
-# The canonical bicameral-ingest skill lives inside the MCP submodule
-# (tracked at pilot/mcp/.claude/skills/bicameral-ingest/SKILL.md). We
-# resolve it relative to this file so CI and local dev agree without any
-# env-var dance. Phase 5 skill-spec A/B branches edit this exact file.
-MCP_ROOT = Path(__file__).resolve().parents[1]  # pilot/mcp
+# The canonical bicameral-ingest skill lives at
+# .claude/skills/bicameral-ingest/SKILL.md. We resolve it relative to
+# this file so CI and local dev agree without any env-var dance. Phase 5
+# skill-spec A/B branches edit this exact file.
+MCP_ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD_PATH = MCP_ROOT / ".claude" / "skills" / "bicameral-ingest" / "SKILL.md"
 CACHE_DIR = Path(__file__).resolve().parent / ".extract-cache"
 

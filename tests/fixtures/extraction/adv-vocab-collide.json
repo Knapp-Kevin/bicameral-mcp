@@ -1,6 +1,6 @@
 {
   "source_ref": "adv-vocab-collide",
-  "transcript_path": "pilot/ml/data/transcripts/adv-vocab-collide.md",
+  "transcript_path": "tests/fixtures/transcripts/adv-vocab-collide.md",
   "repo_key": "adversarial",
   "category": "VOCAB-COLLIDE",
   "generated_by": "claude-opus-4-6[1m]-in-session",

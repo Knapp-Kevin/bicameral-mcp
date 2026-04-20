@@ -9,7 +9,6 @@ symbol matching → coverage loop tier broadening → code_region output.
 Silong: run this after any change to code_locator/ to see if accuracy improves.
 
 Usage:
-    cd pilot/mcp
     .venv/bin/python tests/eval_code_locator.py
     .venv/bin/python tests/eval_code_locator.py --repo /path/to/other/repo
     .venv/bin/python tests/eval_code_locator.py --top-k 5 --verbose
@@ -20,7 +19,7 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure pilot/mcp is on path
+# Ensure MCP repo root is on path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fixtures.expected.decisions import ALL_DECISIONS
@@ -277,8 +276,8 @@ def evaluate(
 
 def main():
     parser = argparse.ArgumentParser(description="Code Locator E2E Grounding Evaluation")
-    parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[3]),
-                        help="Path to repo (default: bicameral root)")
+    parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]),
+                        help="Path to repo (default: MCP repo root)")
     parser.add_argument("--multi-repo", type=str, default=None,
                         help='JSON map of repo_name→path, e.g. \'{"medusa":"/path/to/medusa"}\'')
     parser.add_argument("--top-k", type=int, default=5, help="Top-K for precision/MRR")

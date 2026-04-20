@@ -4,7 +4,7 @@
 Runs the current .claude/skills/bicameral-ingest/SKILL.md Step-1 prompt
 against each transcript in TRANSCRIPT_SOURCES using a strong model
 (default: claude-opus-4-6-20251015) and writes the extracted decisions
-+ action items to pilot/mcp/tests/fixtures/extraction/<source_ref>.json.
++ action items to tests/fixtures/extraction/<source_ref>.json.
 
 The committed JSONs are the **ground truth** for the M1 eval's
 precision/recall metric — they are hand-editable after bootstrap,
@@ -12,11 +12,10 @@ and re-running this script overwrites them. Commit the resulting
 diff like any other reference fixture.
 
 Usage:
-    cd pilot/mcp
     export ANTHROPIC_API_KEY=sk-ant-api03-...
     .venv/bin/python tests/regen_extraction_fixtures.py --all
     .venv/bin/python tests/regen_extraction_fixtures.py \\
-        --source-ref medusa-payment-timeout \\
+        --source-ref adv-strat-fake \\
         --model claude-opus-4-6-20251015
     .venv/bin/python tests/regen_extraction_fixtures.py --all --dry-run
 
@@ -32,7 +31,7 @@ Cost (approximate, one-time bootstrap with Opus 4.6):
     ~9 transcripts × ~2k output tokens × $75/Mtok ≈ $1.35
     Total ≈ $1.75 per full-corpus regen. Cheap.
 
-After running, `git diff pilot/mcp/tests/fixtures/extraction/` should
+After running, `git diff tests/fixtures/extraction/` should
 show the new/changed fixtures. Review, hand-edit if needed, commit.
 """
 from __future__ import annotations
@@ -55,13 +54,13 @@ from _extract_headless import (  # noqa: E402  (sibling module)
     extract_from_current_skill,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+MCP_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "extraction"
 RECOMMENDED_MODEL = "claude-opus-4-6-20251015"
 
 
 def _load_transcript(rel_path: str) -> str:
-    p = (REPO_ROOT / rel_path).resolve()
+    p = (MCP_ROOT / rel_path).resolve()
     if not p.exists():
         raise FileNotFoundError(f"transcript not found: {p}")
     return p.read_text(encoding="utf-8")
