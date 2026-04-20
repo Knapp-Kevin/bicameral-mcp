@@ -5,7 +5,6 @@ Tests are gated by phase. Each phase gate is an env var. Run only what's impleme
 ## Running tests
 
 ```bash
-cd pilot/mcp
 source .venv/bin/activate  # or: python -m pytest directly via .venv/bin/pytest
 
 # Packaging / startup smoke

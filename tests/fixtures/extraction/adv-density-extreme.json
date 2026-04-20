@@ -1,6 +1,6 @@
 {
   "source_ref": "adv-density-extreme",
-  "transcript_path": "pilot/ml/data/transcripts/adv-density-extreme.md",
+  "transcript_path": "tests/fixtures/transcripts/adv-density-extreme.md",
   "repo_key": "adversarial",
   "category": "DENSITY-EXTREME",
   "generated_by": "claude-opus-4-6[1m]-in-session",

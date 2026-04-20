@@ -543,31 +543,25 @@ TRANSCRIPT_SOURCES: dict[str, dict] = {
     # tree (any indexed code works — adversarial transcripts measure
     # extraction quality, not grounding precision against a specific
     # codebase). Ground truth for each lives at
-    # pilot/mcp/tests/fixtures/extraction/adv-*.json and is hand-editable.
-    #
-    # Note: the friendly e-commerce corpus (medusa-*, saleor-*, vendure-*)
-    # used to live here as well, but was removed once it became clear that
-    # the friendly transcripts are too easy to be informative about
-    # real-world reliability. The transcript .md files remain in
-    # pilot/ml/data/transcripts/ for reference and other tooling.
+    # tests/fixtures/extraction/adv-*.json and is hand-editable.
     "adv-strat-fake": {
-        "transcript": "pilot/ml/data/transcripts/adv-strat-fake.md",
+        "transcript": "tests/fixtures/transcripts/adv-strat-fake.md",
         "repo_key": "adversarial",
     },
     "adv-vocab-collide": {
-        "transcript": "pilot/ml/data/transcripts/adv-vocab-collide.md",
+        "transcript": "tests/fixtures/transcripts/adv-vocab-collide.md",
         "repo_key": "adversarial",
     },
     "adv-density-extreme": {
-        "transcript": "pilot/ml/data/transcripts/adv-density-extreme.md",
+        "transcript": "tests/fixtures/transcripts/adv-density-extreme.md",
         "repo_key": "adversarial",
     },
     "adv-offtopic-mix": {
-        "transcript": "pilot/ml/data/transcripts/adv-offtopic-mix.md",
+        "transcript": "tests/fixtures/transcripts/adv-offtopic-mix.md",
         "repo_key": "adversarial",
     },
     "adv-reversal": {
-        "transcript": "pilot/ml/data/transcripts/adv-reversal.md",
+        "transcript": "tests/fixtures/transcripts/adv-reversal.md",
         "repo_key": "adversarial",
     },
 }

@@ -39,7 +39,7 @@ RESULTS_DIR = Path(__file__).parent.parent / "test-results" / "e2e"
 def setup_env(monkeypatch, tmp_path):
     """Fresh in-memory ledger for every test."""
     monkeypatch.setenv("SURREAL_URL", "memory://")
-    monkeypatch.setenv("REPO_PATH", str(Path(__file__).resolve().parents[3]))
+    monkeypatch.setenv("REPO_PATH", str(Path(__file__).resolve().parents[1]))
     reset_ledger_singleton()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     yield

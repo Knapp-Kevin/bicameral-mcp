@@ -1,6 +1,6 @@
 {
   "source_ref": "adv-strat-fake",
-  "transcript_path": "pilot/ml/data/transcripts/adv-strat-fake.md",
+  "transcript_path": "tests/fixtures/transcripts/adv-strat-fake.md",
   "repo_key": "adversarial",
   "category": "STRAT-FAKE",
   "generated_by": "claude-opus-4-6[1m]-in-session",

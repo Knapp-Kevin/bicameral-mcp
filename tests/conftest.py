@@ -58,8 +58,8 @@ def _default_authoritative_ref_to_current_branch(monkeypatch):
 
 @pytest.fixture
 def repo_path() -> str:
-    """Repo root. Defaults to the bicameral repo itself for Phase 1+ tests."""
-    return os.getenv("REPO_PATH", str(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))))
+    """Repo root. Defaults to the MCP repo itself for Phase 1+ tests."""
+    return os.getenv("REPO_PATH", str(os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))))
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ def minimal_payload() -> dict:
                 "symbols": ["test_function"],
                 "code_regions": [
                     {
-                        "file_path": "pilot/mcp/server.py",
+                        "file_path": "server.py",
                         "symbol": "test_function",
                         "type": "function",
                         "start_line": 1,

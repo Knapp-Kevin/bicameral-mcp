@@ -27,13 +27,13 @@ target.
 ## File format
 
 One file per transcript, named `<source_ref>.json`. `source_ref` matches
-keys in `pilot/mcp/tests/fixtures/expected/decisions.py:TRANSCRIPT_SOURCES`.
+keys in `tests/fixtures/expected/decisions.py:TRANSCRIPT_SOURCES`.
 
 ```json
 {
-  "source_ref": "medusa-payment-timeout",
-  "transcript_path": "pilot/ml/data/transcripts/medusa-payment-timeout.md",
-  "repo_key": "medusa",
+  "source_ref": "adv-strat-fake",
+  "transcript_path": "tests/fixtures/transcripts/adv-strat-fake.md",
+  "repo_key": "adversarial",
   "generated_by": "claude-opus-4-6-20251015",
   "generated_at": "2026-04-13T22:30:00+00:00",
   "skill_md_sha": "abcd1234ef56",
@@ -61,7 +61,7 @@ Fields:
 
 ## How to regenerate
 
-From `pilot/mcp`:
+From the MCP repo root:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-api03-...
@@ -79,7 +79,7 @@ Options:
 Cost (approximate): ~**\$1.75** for a full-corpus regeneration with Opus 4.6.
 One-shot, rarely repeated.
 
-After running, `git diff pilot/mcp/tests/fixtures/extraction/` shows the new
+After running, `git diff tests/fixtures/extraction/` shows the new
 or changed fixtures. Review, hand-edit if needed, commit, push.
 
 ## When to hand-edit
