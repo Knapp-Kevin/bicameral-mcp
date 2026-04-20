@@ -85,14 +85,43 @@ Description                                    Caller receives 15-20 candidates
 - Separates retrieval (finding candidates) from verification (judging correctness)
 - Fixes the v0.4.16 bug: BM25 hits were silently promoted to REFLECTED
 
+## Codex Adversarial Review #2 (2026-04-20)
+
+Three findings addressed below:
+
+1. **Phase 1 overclaimed**: branch builds symbol index but never wires
+   it into `_ground_single()`. Tiers unchanged. No recall lift shipped.
+   → Status updated below; Phase 1 split into 1a (groundwork, DONE)
+   and 1b (actual enrichment, TODO).
+
+2. **Compliance stale-read vulnerability**: `resolve_compliance` doesn't
+   require caller to send content_hash. File could change between caller
+   reading and verdict write → stale verdict marks unreviewed code
+   REFLECTED. → Added compare-and-set guard to Phase 2.
+
+3. **Symbol index build fragile**: `index_symbols()` has no try/except,
+   failure blocks entire rebuild. → Added best-effort isolation to Phase 1b.
+
 ## Implementation Plan
 
-### Phase 1: Widen Retrieval (~1 hour)
+### Phase 1a: Symbol Index Groundwork (DONE — on branch)
+
+**Status**: Implemented, not yet wired into grounding pipeline.
+
+What's shipped:
+- `bm25s_client.py`: `index_symbols()`, `search_symbols()` with
+  stemming (PyStemmer), test file filtering, class/interface type boost
+- `code_locator_runtime.py`: calls `index_symbols()` during rebuild
+- `bm25s_client.load()`: loads symbol index from disk if present
+
+What's NOT shipped: `_ground_single()` does not call `search_symbols()`.
+Coverage tiers unchanged. **Zero recall improvement at this point.**
+
+### Phase 1b: Wire Enrichment + Harden Index Build (~1.5 hours)
 
 **File**: `adapters/code_locator.py`
 
-Increase max_symbols in coverage tiers to return more candidates:
-
+1. Widen coverage tiers:
 ```python
 _COVERAGE_TIERS = [
     (5, 75, 15),    # Tier 0: was (3, 75, 5)
@@ -101,16 +130,37 @@ _COVERAGE_TIERS = [
 ]
 ```
 
-Add symbol BM25 enrichment at the end of `_ground_single()`:
+2. Add symbol BM25 enrichment at the end of `_ground_single()`:
 after the existing fuzzy + file-level pipeline fills its slots,
 append symbol-level BM25 results (using the full description as
-query) to fill remaining slots up to max_symbols.
+query) to fill remaining slots up to max_symbols. The existing
+pipeline produces high-precision results at ranks 1-5. Symbol BM25
+adds diversity at ranks 6-15.
 
-The existing pipeline produces high-precision results at ranks 1-5.
-Symbol BM25 adds diversity at ranks 6-15 — different symbols that
-the fuzzy path misses.
+3. **Harden index build** (Codex finding #3): wrap `index_symbols()`
+in try/except in `code_locator_runtime.py`. Use atomic write (temp
+file + rename) for the pickle. If symbol index fails to build or
+load, fall back to file-level BM25 only — no crash, no blocked
+rebuild.
 
-**Verify**: recall@15 ≥ 40% (up from 30% at top-3).
+```python
+# code_locator_runtime.py
+try:
+    bm25.index_symbols(index_dir, symbol_db=_sdb, ...)
+except Exception as exc:
+    logger.warning("Symbol index build failed (non-fatal): %s", exc)
+```
+
+```python
+# bm25s_client.py index_symbols() — atomic write
+tmp_path = index_path.with_suffix(".tmp")
+with open(tmp_path, "wb") as f:
+    pickle.dump({"bm25": bm25, "symbol_ids": symbol_ids}, f)
+tmp_path.rename(index_path)
+```
+
+**Verify**: recall@15 ≥ 40% (up from 30% at top-3). File-level BM25
+still works if symbol index is missing.
 
 ### Phase 2: Ship `bicameral.resolve_compliance` Tool (~2 hours)
 
@@ -123,28 +173,46 @@ New MCP tool that the caller LLM invokes to write compliance verdicts:
 async def handle_resolve_compliance(args):
     intent_id = args["intent_id"]
     region_id = args["region_id"]
-    verdict = args["verdict"]  # "compliant" | "non_compliant" | "partial"
+    verdict = args["verdict"]       # "compliant" | "non_compliant" | "partial"
+    content_hash = args["content_hash"]  # REQUIRED — caller must send
     reasoning = args.get("reasoning", "")
     
-    # Write to compliance_check table (v0.4.20 schema already exists)
+    # Compare-and-set guard (Codex finding #2):
+    # Reject verdict if content_hash doesn't match current region.
+    # Prevents stale verdicts when file changed between read and write.
+    current_hash = await ledger.get_region_content_hash(region_id)
+    if current_hash and current_hash != content_hash:
+        return {"error": "content_hash_mismatch",
+                "message": "Region content changed since you read it. Re-read and re-evaluate."}
+    
     await ledger.upsert_compliance_check(
         intent_id, region_id, verdict, reasoning,
-        content_hash=compute_hash(region_content),
+        content_hash=content_hash,
     )
     
     # Re-derive status — REFLECTED only if compliant verdict exists
     await ledger.rederive_status(intent_id)
 ```
 
+**Compare-and-set contract**: the caller MUST include the
+`content_hash` of the code it actually read. The server rejects the
+write if the hash no longer matches (file was modified between read
+and verdict). This prevents the stale-read vulnerability where a
+verdict blesses code the caller never reviewed.
+
 The caller LLM flow:
-1. `bicameral.ingest` returns decisions with 15 candidate regions each
-2. Caller sees candidates with `status: PENDING` 
-3. Caller evaluates each candidate against the decision description
-4. Calls `bicameral.resolve_compliance` for each verdict
-5. `derive_status` promotes to REFLECTED only with compliant verdict
+1. `bicameral.ingest` returns decisions with 15 candidate regions,
+   each including `content_hash`
+2. Caller sees candidates with `status: PENDING`
+3. Caller reads the code at each region's file/line range
+4. Evaluates: does this code implement the decision?
+5. Calls `bicameral.resolve_compliance` with verdict + `content_hash`
+6. Server validates hash → writes verdict → re-derives status
+7. If hash mismatch: caller re-reads and re-evaluates
 
 **Verify**: ingest → candidates returned → caller writes verdict →
-status changes from PENDING to REFLECTED.
+status changes from PENDING to REFLECTED. Also verify: modify file
+after read, write verdict → rejected with content_hash_mismatch.
 
 ### Phase 3: Caller-Side Prompt Engineering (~1 hour)
 
@@ -207,8 +275,8 @@ recall. Verification provides precision.
 ## Risks
 
 1. **Caller LLM quality**: if the caller makes wrong verdicts, status
-   trustworthiness drops. Mitigate: cache verdicts so they can be
-   audited; include reasoning field for transparency.
+   trustworthiness drops. Mitigate: cache verdicts with reasoning field
+   for auditability; compare-and-set guard prevents stale verdicts.
 
 2. **Latency**: 15 candidates × code reading = more tokens for the
    caller. Mitigate: only send candidates that pass basic relevance
@@ -219,22 +287,32 @@ recall. Verification provides precision.
    — an honest "we haven't checked this yet" is better than a false
    "this is implemented."
 
+4. **Symbol index failure**: if `index_symbols()` crashes, could block
+   rebuild. Mitigated in Phase 1b: try/except + atomic writes. File-level
+   BM25 remains functional as fallback.
+
+5. **Stale compliance verdicts**: file changes after caller reads code
+   but before verdict write. Mitigated in Phase 2: compare-and-set on
+   content_hash rejects mismatched verdicts.
+
 ## Files Modified
 
 | File | Phase | Change |
 |------|-------|--------|
-| `adapters/code_locator.py` | 1 | Widen tiers, add symbol BM25 enrichment |
-| `code_locator/retrieval/bm25s_client.py` | 1 | Already built: `index_symbols()`, `search_symbols()` |
-| `code_locator_runtime.py` | 1 | Already wired: calls `index_symbols()` |
-| `handlers/resolve_compliance.py` | 2 | New handler for compliance verdicts |
+| `code_locator/retrieval/bm25s_client.py` | 1a (DONE) | `index_symbols()`, `search_symbols()`, dual-index loading |
+| `code_locator_runtime.py` | 1a (DONE) | Calls `index_symbols()` during rebuild |
+| `adapters/code_locator.py` | 1b | Widen tiers, add symbol BM25 enrichment to `_ground_single()` |
+| `code_locator_runtime.py` | 1b | try/except around `index_symbols()` |
+| `code_locator/retrieval/bm25s_client.py` | 1b | Atomic pickle write (temp + rename) |
+| `handlers/resolve_compliance.py` | 2 | New handler with compare-and-set guard |
 | `server.py` | 2 | Register new tool |
-| `ledger/adapter.py` | 2 | `upsert_compliance_check()` method |
+| `ledger/adapter.py` | 2 | `upsert_compliance_check()`, `get_region_content_hash()` |
 | `tests/eval_code_locator.py` | 4 | Add recall@15 metric |
 
 ## Timeline
 
-- Session 1 (2h): Phase 1 (wider retrieval) + Phase 4 (eval update)
-- Session 2 (3h): Phase 2 (resolve_compliance tool) + Phase 3 (caller prompt)
+- Session 1 (2h): Phase 1b (wire enrichment + harden) + Phase 4 (eval update)
+- Session 2 (3h): Phase 2 (resolve_compliance with CAS guard) + Phase 3 (caller prompt)
 
 ## Context: Jin's Input
 
