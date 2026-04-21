@@ -144,9 +144,9 @@ class RealCodeLocatorAdapter:
     # Progressive broadening tiers for coverage loop.
     # Each tier: (max_files, fuzzy_threshold, max_symbols)
     _COVERAGE_TIERS = [
-        (3, 75, 5),    # Tier 0: strict — top 3 files, high fuzzy, 5 symbols
-        (5, 65, 8),    # Tier 1: relaxed — top 5 files, medium fuzzy, 8 symbols
-        (7, 55, 10),   # Tier 2: broad — top 7 files, low fuzzy, 10 symbols
+        (5, 75, 15),   # Tier 0: strict — top 5 files, high fuzzy, 15 symbols
+        (7, 65, 20),   # Tier 1: relaxed — top 7 files, medium fuzzy, 20 symbols
+        (10, 55, 25),  # Tier 2: broad — top 10 files, low fuzzy, 25 symbols
     ]
 
     _SYMBOL_TYPE_PRIORITY = {
@@ -266,6 +266,7 @@ class RealCodeLocatorAdapter:
 
         tokens = list(dict.fromkeys(identifier_tokens + domain_words + case_forms))
 
+
         # Pre-compute fuzzy-validated symbol IDs once. These serve two
         # purposes below:
         #   1. Seed the graph channel in search_code() so RRF fusion
@@ -368,6 +369,36 @@ class RealCodeLocatorAdapter:
                 except Exception as exc:
                     logger.warning("[ground] file-level retrieval failed for '%s': %s", description[:60], exc)
                 code_regions = code_regions[:max_symbols]
+
+        # Stage 3: Symbol-level BM25 enrichment.
+        # Appends symbol BM25 results (stemmed, type-boosted) to fill
+        # remaining slots with diverse candidates the fuzzy path misses.
+        if len(code_regions) < max_symbols:
+            bm25_client = getattr(self._search_tool, "bm25", None)
+            if bm25_client and getattr(bm25_client, "_symbol_loaded", False):
+                try:
+                    sym_hits = bm25_client.search_symbols(description, top_k=max_symbols)
+                    existing_syms = {r["symbol"] for r in code_regions}
+                    for hit in sym_hits:
+                        if len(code_regions) >= max_symbols:
+                            break
+                        row = db.lookup_by_id(hit["symbol_id"])
+                        if not row:
+                            continue
+                        sym_name = row["qualified_name"] or row["name"]
+                        if sym_name in existing_syms:
+                            continue
+                        existing_syms.add(sym_name)
+                        code_regions.append({
+                            "symbol": sym_name,
+                            "file_path": row["file_path"],
+                            "start_line": row["start_line"],
+                            "end_line": row["end_line"],
+                            "type": row["type"],
+                            "purpose": description,
+                        })
+                except Exception as exc:
+                    logger.debug("[ground] symbol BM25 enrichment failed: %s", exc)
 
         return code_regions
 

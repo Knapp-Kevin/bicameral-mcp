@@ -6,10 +6,13 @@ File-level granularity: each document is a source file, scored by BM25.
 
 from __future__ import annotations
 
+import logging
 import os
 import pickle
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from ..indexing.index_builder import iter_source_files
 from ..models import RetrievalResult
@@ -57,6 +60,14 @@ def _read_file(path: str) -> str:
         return f.read()
 
 
+def _get_stemmer():
+    try:
+        import Stemmer
+        return Stemmer.Stemmer("english")
+    except ImportError:
+        return None
+
+
 class Bm25sClient(BM25Search):
     """BM25 search backed by the bm25s library."""
 
@@ -64,6 +75,9 @@ class Bm25sClient(BM25Search):
         self._bm25 = None
         self._doc_ids: list[str] = []
         self._loaded = False
+        self._symbol_bm25 = None
+        self._symbol_ids: list[int] = []
+        self._symbol_loaded = False
 
     def index(self, repo_path: str, output_dir: str, symbol_db=None, k1: float = 1.5, b: float = 0.75) -> None:
         """Build BM25 index from source files and persist to disk.
@@ -118,6 +132,97 @@ class Bm25sClient(BM25Search):
         self._doc_ids = doc_ids
         self._loaded = True
 
+    _TEST_PREFIXES = ("test/", "tests/", "spec/", "__tests__/", "test_", "tests_")
+    _TEST_SUFFIXES = ("_test.py", "_test.ts", "_spec.py", "_spec.ts",
+                      ".test.ts", ".test.js", ".spec.ts", ".spec.js",
+                      ".e2e-spec.ts")
+
+    def _is_test_file(self, path: str) -> bool:
+        return (any(path.startswith(p) or f"/{p}" in path for p in self._TEST_PREFIXES)
+                or any(path.endswith(s) for s in self._TEST_SUFFIXES))
+
+    def index_symbols(self, output_dir: str, symbol_db, k1: float = 1.5, b: float = 0.75) -> None:
+        """Build BM25 index at symbol granularity (one doc per symbol)."""
+        import bm25s
+
+        conn = symbol_db._connect()
+        rows = conn.execute(
+            "SELECT id, name, qualified_name, type, file_path, "
+            "signature, parent_qualified_name FROM symbols"
+        ).fetchall()
+
+        _TYPE_NAME_BOOST = {"class": 4, "interface": 4, "type_alias": 3, "function": 1, "method": 1}
+
+        documents: list[str] = []
+        symbol_ids: list[int] = []
+        for row in rows:
+            file_path = row["file_path"] or ""
+            name = row["name"] or ""
+            if not file_path or not name:
+                continue
+            if self._is_test_file(file_path):
+                continue
+            name_boost = _TYPE_NAME_BOOST.get(row["type"], 1)
+            name_expanded = expand_identifiers(name)
+            qualified_name = row["qualified_name"] or ""
+            parent_qn = row["parent_qualified_name"] or ""
+            parts = [
+                (name_expanded + " ") * name_boost,
+                expand_identifiers(qualified_name) if qualified_name else "",
+                row["type"] or "",
+                expand_identifiers(parent_qn) if parent_qn else "",
+                row["signature"] or "",
+                file_path.replace("/", " ").replace(".", " "),
+            ]
+            doc = " ".join(p for p in parts if p)
+            documents.append(doc)
+            symbol_ids.append(row["id"])
+
+        if not documents:
+            self._symbol_bm25 = bm25s.BM25(k1=k1, b=b)
+            self._symbol_ids = []
+            self._symbol_loaded = True
+            return
+
+        stemmer = _get_stemmer()
+        tokens = bm25s.tokenize(documents, stopwords="en", stemmer=stemmer, show_progress=False)
+        bm25 = bm25s.BM25(k1=k1, b=b)
+        bm25.index(tokens, show_progress=False)
+
+        os.makedirs(output_dir, exist_ok=True)
+        index_path = Path(output_dir) / "bm25_symbol_index.pkl"
+        tmp_path = index_path.with_suffix(".tmp")
+        with open(tmp_path, "wb") as f:
+            pickle.dump({"bm25": bm25, "symbol_ids": symbol_ids}, f)
+        tmp_path.rename(index_path)
+
+        self._symbol_bm25 = bm25
+        self._symbol_ids = symbol_ids
+        self._symbol_loaded = True
+
+    def search_symbols(self, query: str, top_k: int = 20) -> list[dict]:
+        """Search the symbol-level BM25 index. Returns ranked symbol IDs."""
+        if not self._symbol_loaded or self._symbol_bm25 is None or not self._symbol_ids:
+            return []
+
+        import bm25s
+
+        stemmer = _get_stemmer()
+        tokens = bm25s.tokenize(
+            [expand_identifiers(query)], stopwords="en", stemmer=stemmer, show_progress=False,
+        )
+        k = min(top_k, len(self._symbol_ids))
+        results, scores = self._symbol_bm25.retrieve(tokens, k=k)
+
+        output = []
+        for i in range(k):
+            idx = results[0, i]
+            score = float(scores[0, i])
+            if score <= 0:
+                continue
+            output.append({"symbol_id": self._symbol_ids[idx], "score": score})
+        return output
+
     def load(self, index_dir: str) -> None:
         """Load a previously built BM25 index from disk."""
         index_path = Path(index_dir) / "bm25_index.pkl"
@@ -130,6 +235,18 @@ class Bm25sClient(BM25Search):
         self._bm25 = data["bm25"]
         self._doc_ids = data["doc_ids"]
         self._loaded = True
+
+        sym_path = Path(index_dir) / "bm25_symbol_index.pkl"
+        if sym_path.exists():
+            try:
+                with open(sym_path, "rb") as f:
+                    sym_data = pickle.load(f)
+                self._symbol_bm25 = sym_data["bm25"]
+                self._symbol_ids = sym_data["symbol_ids"]
+                self._symbol_loaded = True
+            except Exception as exc:
+                logger.warning("[bm25] failed to load symbol index: %s", exc)
+                self._symbol_loaded = False
 
     def count_corpus_tokens(self, query: str) -> int:
         """FC-1 guard helper: how many distinct tokens from ``query`` survive
@@ -176,10 +293,6 @@ class Bm25sClient(BM25Search):
         k = min(num_results, len(self._doc_ids))
         results, scores = self._bm25.retrieve(tokens, k=k)
 
-        # Patterns for test/spec files — exclude entirely so they never become grounding candidates
-        _TEST_PREFIXES = ("test/", "tests/", "spec/", "__tests__/", "test_", "tests_")
-        _TEST_SUFFIXES = ("_test.py", "_test.ts", "_spec.py", "_spec.ts")
-
         output: list[RetrievalResult] = []
         for i in range(k):
             doc_idx = results[0, i]
@@ -187,8 +300,7 @@ class Bm25sClient(BM25Search):
             if score <= 0:
                 continue
             file_path = self._doc_ids[doc_idx]
-            if any(file_path.startswith(p) or f"/{p}" in file_path for p in _TEST_PREFIXES) \
-                    or any(file_path.endswith(s) for s in _TEST_SUFFIXES):
+            if self._is_test_file(file_path):
                 continue
             output.append(
                 RetrievalResult(
