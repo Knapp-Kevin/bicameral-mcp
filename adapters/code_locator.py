@@ -404,6 +404,17 @@ class RealCodeLocatorAdapter:
                 resolved.append(mapping)
                 continue
 
+            # v0.4.23 (Lever 2): widen the BM25 query with the caller-LLM's
+            # search_hint — synonyms, domain vocab, likely identifier names.
+            # Strictly additive: if no hint is provided, behavior is
+            # identical to pre-0.4.23. Hint is NOT stored as part of the
+            # intent's description; it's query-only metadata.
+            search_hint = (mapping.get("search_hint") or "").strip()
+            if search_hint:
+                bm25_query = f"{description} {search_hint}"
+            else:
+                bm25_query = description
+
             # FC-1 guard: refuse to ground queries that degenerate to <2 corpus
             # tokens. Witnessed in Accountable (2026-04-13): "GitHub Discussions
             # vs Slack" left only ``slack`` after stopword filtering, BM25
@@ -411,23 +422,23 @@ class RealCodeLocatorAdapter:
             # to ``log-error-to-slack/index.ts:getFeatureName`` by tiebreak.
             # Under-specified queries belong as ungrounded open questions.
             try:
-                corpus_token_count = self._search_tool.bm25.count_corpus_tokens(description)
+                corpus_token_count = self._search_tool.bm25.count_corpus_tokens(bm25_query)
             except Exception as exc:
-                logger.debug("[ground] FC-1 token count failed for '%s': %s", description[:60], exc)
+                logger.debug("[ground] FC-1 token count failed for '%s': %s", bm25_query[:60], exc)
                 corpus_token_count = 2  # fail-open: do not block grounding on detector failure
             if corpus_token_count < 2:
                 logger.info(
                     "[ground] FC-1 skip: %d corpus tokens in %r — leaving ungrounded",
-                    corpus_token_count, description[:60],
+                    corpus_token_count, bm25_query[:60],
                 )
                 resolved.append(mapping)
                 continue
 
             # Run BM25 search once and reuse across tiers.
             try:
-                hits = self.search_code(description)
+                hits = self.search_code(bm25_query)
             except Exception as exc:
-                logger.warning("[ground] BM25 search failed for '%s': %s", description[:60], exc)
+                logger.warning("[ground] BM25 search failed for '%s': %s", bm25_query[:60], exc)
                 hits = []
 
             code_regions: list[dict] = []

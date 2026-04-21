@@ -158,21 +158,85 @@ Keep the business driver attached to each decision's description so the gap judg
 
 → **Extract: 1 decision** — "Add PII redaction to the audit log (driver: GDPR self-assessment data-minimization check, next month deadline)." The key-rotation line is security hygiene with no business driver named — reject it. A PM reviewing the ledger can act on the GDPR item; they can't act on key rotation.
 
-### 2. Validate relevance against the codebase
+### 2. Resolve code regions via the MCP retrieval tools (v0.4.23+ default)
 
-For each candidate decision, use the code locator tools to check whether it touches real code:
+**This is where grounding quality is won or lost.** Server-side BM25 is a fallback
+for *abstract* decisions with no identifiable code anchor. For every decision
+that touches concrete code, **you** (the caller LLM) should resolve explicit
+`code_regions` using the MCP retrieval tools before ingesting. You have full
+codebase context; BM25 has a bag of tokens. Use your advantage.
 
-- Call `search_code` with a query derived from the decision text. If results come back with relevant hits, the decision is groundable.
-- If the decision mentions specific symbols (functions, classes, modules), call `validate_symbols` with those names to confirm they exist.
-- If a decision returns **zero relevant code hits** and names **no valid symbols**, it is likely strategic — drop it unless it describes something that *should* be built but doesn't exist yet (a genuine "pending" decision).
+**Procedure per decision**:
 
-This step is a lightweight filter, not an exhaustive audit. Spend ~1 search per candidate decision.
+1. **Generate symbol hypotheses** from the decision text. If a decision says
+   *"all email dispatch functions filter via a single source-of-truth check,"*
+   your hypotheses are `dispatchReminders`, `dispatchInterventions`,
+   `dispatchNudge`, `resolveMemberStatus`, `isActiveSubscriber` — not just
+   the literal word "dispatch."
+2. **Call `validate_symbols`** with the hypotheses. Keep symbols that actually
+   exist in the index; drop the rest.
+3. **Call `search_code`** with the validated symbol_ids (not the raw decision
+   text — seeded graph traversal is strictly better than keyword BM25 for
+   finding the real regions). Take the top hits that look relevant.
+4. **Call `get_neighbors`** on the top hit if you're unsure of scope — surfaces
+   callers/callees so you can tell whether the decision is local to one
+   function or spans a call tree.
+5. **Build explicit `code_regions`** — `{file_path, symbol, start_line, end_line, type}` —
+   from the validated tool output. Prefer function-level pins over file-level;
+   bind to the tightest region that still covers the decision's surface area.
+
+**Grounding quality: filter out false positives before ingesting**. If
+`search_code` returns a hit that keyword-matches but doesn't actually implement
+anything related to the decision, drop it. Example: a decision about email
+dispatch should NOT bind to a React `dispatch` reducer just because the word
+appears. Ingesting garbage bindings means every edit to that unrelated file
+triggers a drift alarm later — noise that drowns out real signal.
+
+**Skip decisions that don't bind to real code**. If after this procedure the
+decision has zero concrete regions AND names no valid symbols, it's either
+(a) strategic (drop it) or (b) a genuine "pending" decision for code that
+doesn't exist yet. For the pending case, ingest it with empty `code_regions`
+but include a `search_hint` (see Step 3) so the server's future re-grounding
+sweeps have something to work with.
 
 ### 3. Ingest the filtered set
 
-Call `bicameral.ingest` with a `payload` using the **natural format** (preferred). Only include decisions that passed the relevance filter from step 2.
+Call `bicameral.ingest` using the **internal format** (preferred from
+v0.4.23+ onward) with the `code_regions` you resolved in step 2. Natural
+format remains supported as a fallback for truly abstract decisions with
+no resolvable code surface.
 
-**Natural format** — canonical fields (use this shape):
+**Internal format** (preferred v0.4.23+) — use this when you resolved
+`code_regions` in Step 2:
+
+```
+payload: {
+  query: "<topic / feature area — drives the auto-brief>",
+  mappings: [
+    {
+      intent: "Cache user sessions in Redis for horizontal scaling",
+      span: {
+        text: "<source excerpt>",
+        source_type: "transcript",
+        source_ref: "sprint-14-planning",
+        meeting_date: "2026-04-15",
+        speakers: ["Ian", "Brian"]
+      },
+      symbols: ["SessionCache", "RedisClient"],
+      code_regions: [
+        { file_path: "src/lib/session.ts", symbol: "SessionCache",
+          start_line: 42, end_line: 89, type: "class" },
+        { file_path: "src/lib/redis.ts", symbol: "RedisClient",
+          start_line: 1, end_line: 34, type: "class" }
+      ],
+      search_hint: "SessionCache RedisClient session-cache horizontal scaling"
+    }
+  ]
+}
+```
+
+**Natural format** (fallback) — use when a decision is truly abstract
+and has no resolvable code surface:
 
 ```
 payload: {
@@ -184,10 +248,12 @@ payload: {
   decisions: [
     {
       description: "Cache user sessions in Redis for horizontal scaling",
-      id: "sprint-14-planning#session-cache"  # optional stable id
+      id: "sprint-14-planning#session-cache",  # optional stable id
+      search_hint: "SessionCache RedisClient session cache horizontal scaling"
     },
     {
-      description: "Apply 10% discount on orders ≥ $100"
+      description: "Apply 10% discount on orders ≥ $100",
+      search_hint: "calculateDiscount order_total applyDiscount PricingService"
     }
   ],
   action_items: [
@@ -198,37 +264,19 @@ payload: {
 
 **Field rules** — get these right or decisions evaporate:
 
+- **`mappings[].code_regions`** is the whole game from v0.4.23+. When you pass explicit regions, server BM25 does not run for that mapping — grounding is exactly what you resolved. No false positives from vocab mismatch.
+- **`search_hint`** is the fallback recall booster. When server BM25 *does* run (you didn't resolve `code_regions`), the server concatenates `intent.description + search_hint` as the BM25 query. Put 3-5 likely identifier names or domain synonyms here — exactly the kind of vocabulary your codebase uses that the decision's natural-language description wouldn't contain literally. Example: a decision about "subscription status source-of-truth" won't mention `resolveMemberStatus` or `isActiveSubscriber` but BM25 needs those tokens to find the right dispatch functions. `search_hint` is query-only — it's never stored as part of the intent's description and never appears in briefs.
 - **`decisions[].description`** is the canonical text field. `title` is accepted as a synonym for back-compat; `text` is tolerated as an alias (v0.4.16+). At least one of the three must be non-empty or the decision is silently dropped.
 - **`action_items[].action`** is the canonical text field. `text` is tolerated as an alias (v0.4.16+). `owner` defaults to `"unassigned"`. `due` is an optional ISO date.
 - **`query`** is load-bearing: it's the topic the post-ingest auto-brief and gap-judge chain fire on. If you omit it, the handler falls through to the longest decision description as a topic guess — usable but less focused. **When fanning out from the boundary-detection flow (step 0), always pass each segment's title as `query`.**
-- **`participants`** on the payload populates `span.speakers` for every decision. Put the meeting attendees here, not on individual decisions.
+- **`participants`** (natural format) or **`span.speakers`** (internal format) records the meeting attendees.
 - Do NOT include `open_questions` unless they have direct implementation implications — they're accepted as `list[str]` but clutter the ledger with non-code entries.
 
-**Internal format** — only if you already have pre-resolved code regions from `search_code` / `validate_symbols`:
+**When to choose which format**:
 
-```
-payload: {
-  query: "...",
-  mappings: [
-    {
-      intent: "Cache user sessions in Redis",
-      span: {
-        text: "<source excerpt>",
-        source_type: "transcript",
-        source_ref: "sprint-14-planning",
-        meeting_date: "2026-04-15"
-      },
-      symbols: ["SessionCache"],
-      code_regions: [
-        { file_path: "src/lib/session.ts", symbol: "SessionCache",
-          start_line: 42, end_line: 89, type: "class" }
-      ]
-    }
-  ]
-}
-```
-
-Use the natural format in the common case. Fall through to internal format only when you already have verified file/line pins — otherwise you'll bypass auto-grounding and the server can't map decisions to code on its own.
+- **Internal format, v0.4.23+ default.** You resolved `code_regions` via Step 2. Ingest with explicit pins. The ledger is a trustworthy drift anchor — editing those pinned files fires real drift alarms; editing unrelated files fires nothing. This is the posture we want for real branches.
+- **Natural format + `search_hint`, fallback.** The decision is abstract ("ship by Q3," "SOC2-compliant session storage") or points at code that doesn't exist yet. Server BM25 tries with the widened query; if it produces zero hits the intent stays ungrounded (honest). If BM25 produces a false-positive binding, you'll catch it at the first `bicameral.doctor` or via a pending_compliance_check verdict.
+- **Natural format WITHOUT `search_hint`, legacy.** Works, but this is how the 2026-04-20 Accountable dispatcher ingest ended up with "all dispatch functions" bound to `use-toast.ts:dispatch`. You almost always want at least the hint.
 
 ### 4. Report results
 
