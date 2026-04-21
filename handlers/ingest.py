@@ -56,6 +56,8 @@ def _normalize_payload(payload: dict) -> dict:
             },
             "symbols": [],
             "code_regions": [],
+            # v0.4.23: propagate search_hint from natural format → internal.
+            "search_hint": d.search_hint,
         })
 
     for a in validated.action_items:

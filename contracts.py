@@ -394,6 +394,13 @@ class IngestMapping(BaseModel):
     span: IngestSpan = IngestSpan()
     symbols: list[str] = []
     code_regions: list[IngestCodeRegion] = []
+    # v0.4.23 (Lever 2): optional additional BM25 search terms — synonyms,
+    # related domain vocab, likely code identifiers — used to widen recall
+    # when the server falls through to auto-grounding. Only consulted when
+    # ``code_regions`` is empty. The caller LLM supplies these at ingest
+    # time via the bicameral-ingest skill. Stored-intent.description is
+    # never polluted with these terms; they're query-only metadata.
+    search_hint: str = ""
 
 
 class IngestDecision(BaseModel):
@@ -417,6 +424,13 @@ class IngestDecision(BaseModel):
     # the conclusion), and the ingest path will skip creating a
     # placeholder source_span row.
     source_excerpt: str = ""
+    # v0.4.23 (Lever 2): BM25 recall booster for the auto-grounding
+    # fallback path. Caller LLM supplies synonyms, domain vocab, likely
+    # identifier names that the decision's description wouldn't contain
+    # literally ("subscription check" → "resolveMemberStatus
+    # isActiveSubscriber dispatch_reminders dispatch_interventions"). Only
+    # consulted when no explicit code_regions are resolved.
+    search_hint: str = ""
 
 
 class IngestActionItem(BaseModel):
