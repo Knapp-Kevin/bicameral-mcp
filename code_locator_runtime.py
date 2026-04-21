@@ -222,6 +222,11 @@ def rebuild_index(repo_path: str, config, force: bool = False) -> None:
     _sdb = _SymDB(config.sqlite_db)
     bm25 = Bm25sClient()
     bm25.index(repo, index_dir, symbol_db=_sdb, k1=config.bm25_k1, b=config.bm25_b)
+    try:
+        bm25.index_symbols(index_dir, symbol_db=_sdb, k1=config.bm25_k1, b=config.bm25_b)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Symbol index build failed (non-fatal): %s", exc)
     _sdb.close()
     record_index_state(config.sqlite_db, repo)
 
