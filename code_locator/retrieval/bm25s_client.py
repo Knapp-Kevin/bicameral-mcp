@@ -6,10 +6,13 @@ File-level granularity: each document is a source file, scored by BM25.
 
 from __future__ import annotations
 
+import logging
 import os
 import pickle
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from ..indexing.index_builder import iter_source_files
 from ..models import RetrievalResult
@@ -153,17 +156,23 @@ class Bm25sClient(BM25Search):
         documents: list[str] = []
         symbol_ids: list[int] = []
         for row in rows:
-            if self._is_test_file(row["file_path"]):
+            file_path = row["file_path"] or ""
+            name = row["name"] or ""
+            if not file_path or not name:
+                continue
+            if self._is_test_file(file_path):
                 continue
             name_boost = _TYPE_NAME_BOOST.get(row["type"], 1)
-            name_expanded = expand_identifiers(row["name"])
+            name_expanded = expand_identifiers(name)
+            qualified_name = row["qualified_name"] or ""
+            parent_qn = row["parent_qualified_name"] or ""
             parts = [
                 (name_expanded + " ") * name_boost,
-                expand_identifiers(row["qualified_name"]),
+                expand_identifiers(qualified_name) if qualified_name else "",
                 row["type"] or "",
-                expand_identifiers(row["parent_qualified_name"] or ""),
+                expand_identifiers(parent_qn) if parent_qn else "",
                 row["signature"] or "",
-                row["file_path"].replace("/", " ").replace(".", " "),
+                file_path.replace("/", " ").replace(".", " "),
             ]
             doc = " ".join(p for p in parts if p)
             documents.append(doc)
@@ -229,11 +238,15 @@ class Bm25sClient(BM25Search):
 
         sym_path = Path(index_dir) / "bm25_symbol_index.pkl"
         if sym_path.exists():
-            with open(sym_path, "rb") as f:
-                sym_data = pickle.load(f)
-            self._symbol_bm25 = sym_data["bm25"]
-            self._symbol_ids = sym_data["symbol_ids"]
-            self._symbol_loaded = True
+            try:
+                with open(sym_path, "rb") as f:
+                    sym_data = pickle.load(f)
+                self._symbol_bm25 = sym_data["bm25"]
+                self._symbol_ids = sym_data["symbol_ids"]
+                self._symbol_loaded = True
+            except Exception as exc:
+                logger.warning("[bm25] failed to load symbol index: %s", exc)
+                self._symbol_loaded = False
 
     def count_corpus_tokens(self, query: str) -> int:
         """FC-1 guard helper: how many distinct tokens from ``query`` survive

@@ -239,9 +239,9 @@ decisions earn REFLECTED status — without your verdict, they stay PENDING.**
 
 For each `PendingComplianceCheck` in the list:
 
-1. **Read the code** at `file_path` lines `start_line`–`end_line` (the
-   `code_body` field contains a preview, but read the actual file for
-   full context if the snippet is truncated).
+1. **Read the code** using the `code_body` field (tree-sitter extracted
+   snippet). If the snippet looks truncated, read the full file at
+   `file_path` and locate the `symbol` for additional context.
 
 2. **Compare** the code against `intent_description`. Ask yourself:
    does this code **functionally implement** the decision, or does it
@@ -251,7 +251,7 @@ For each `PendingComplianceCheck` in the list:
    is NOT.
 
 3. **Write your verdict** by calling `bicameral.resolve_compliance`:
-   ```
+   ```json
    bicameral.resolve_compliance({
      phase: "<from the pending check>",
      verdicts: [
