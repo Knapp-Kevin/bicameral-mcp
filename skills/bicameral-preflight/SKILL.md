@@ -102,10 +102,68 @@ Look at `response.fired`:
 - **`fired == true`** → render the surfaced block (next step) BEFORE
   doing any code work.
 
-### 4. Render the surfaced block
+### 3.5 Scan recent user turns for uningested corrections
 
-When `fired=true`, surface the response using this exact format. Lead
-with the `(bicameral surfaced)` attribution line.
+Before classifying server-returned findings, scan the last ~10 user
+messages in the current conversation for **uningested corrections** —
+load-bearing design, scope, or constraint decisions the user stated
+that are NOT yet in the decision ledger. This closes the 80% gap where
+the user corrects Claude mid-session and the correction shapes the
+code but never reaches bicameral.
+
+**Step A — cheap pre-filter (regex, zero LLM cost):**
+Retain only messages that contain at least one of these markers (case-
+insensitive): `"actually"`, `"shouldn't"`, `"should not"`, `"don't use"`,
+`"do not use"`, `"wait,"`, `"no wait"`, `"nope"`, `"not X"` (generic
+negation + referent), `"instead of"`, `"rather than"`, `"let's not"`.
+If zero messages match, skip the rest of this step.
+
+**Step B — classify remaining candidates:**
+For each candidate, classify against this rubric:
+
+- **correction (ask)** — load-bearing design / scope / product decision
+  that contradicts, redirects, or constrains the in-flight work.
+  Example: *"abandoned checkout shouldn't use account_status — that
+  conflates signed-up-never-paid with churned"*.
+- **correction (mechanical)** — pure symbol/name clarification with no
+  design impact. Example: *"s/account_status/stripe_status/"*.
+- **not-a-correction** — clarifying question, reaction, off-topic,
+  minor copy-edit. Skip.
+
+Only `user` messages qualify — Claude's responses are downstream of
+corrections, not evidence of them.
+
+**Step C — ledger check for each correction:**
+For each classified correction, call
+`bicameral.search(query=<one-line paraphrase>, top_k=3)`. If any hit
+has cosine similarity ≥ 0.75 → treat as already ingested, skip. All
+others → queue as `uningested_corrections` findings.
+
+**Step D — merge into the classification pass below.**
+Mechanical corrections auto-ingest silently via
+`bicameral.ingest(source="conversation", decisions=[...])` with no
+user question (zero-friction capture).
+Ask corrections go into the stop-and-ask queue as the new 5th
+category.
+
+### 4. Classify findings before surfacing
+
+Before rendering anything, classify each finding as **mechanical** or
+**ask** (see Stop-and-Ask Contract below). Auto-resolve mechanical
+findings silently. For ask-findings, emit at most **one question per
+category**, in this priority order: drift → divergence →
+uningested_corrections → open questions → ungrounded.
+Hard cap: ≤ 4 questions total per preflight call (if all 5 categories
+have ask-findings, drop `ungrounded` — least urgent for correctness).
+
+Categories with no ask-findings are silently skipped. If every
+finding in every category is mechanical, produce NO output (same as
+`fired=false` — silent).
+
+### 5. Render the surfaced block
+
+When at least one ask-finding exists, surface the response using this
+format. Lead with the `(bicameral surfaced)` attribution line.
 
 ```
 (bicameral surfaced — checking <topic> context before implementing)
@@ -125,6 +183,11 @@ with the `(bicameral surfaced)` attribution line.
 ⚠ N divergent decision pair(s) — pick a winner before continuing:
   • <symbol> (<file_path>): <summary>
 
+⚠ N uningested correction(s) from this session:
+  • "<user's correction, quoted or one-line paraphrase>"
+    Proposed capture: <decision description>
+    [Ingest now? Y/n]
+
 ⚠ N unresolved open question(s):
   • <description>
     Source: <source_ref>
@@ -140,7 +203,7 @@ A one-line forward narration helps:
 > from idempotency.ts. I'll flag the event.id deduplication question
 > for you to answer before I commit."
 
-### 5. Honor blocking hints (guided mode only)
+### 6. Honor blocking hints (guided mode only)
 
 If any hint has `blocking: true`, you MUST stop after the surfaced
 block and wait for user acknowledgment before doing any write
@@ -151,6 +214,39 @@ explicitly tell you to proceed.
 In normal mode (non-guided), hints have `blocking: false` and you can
 proceed after surfacing them. The user opted into the looser
 interaction at setup time.
+
+## Stop-and-Ask Contract
+
+<!-- Copy of bicameral-ask-contract.md v1 — see source for canonical version -->
+
+For every finding this skill surfaces, classify first:
+
+- **mechanical** — one obvious correct answer (e.g., renamed symbol
+  with identical signature; a decision whose code moved but semantics
+  are intact). Auto-apply the resolution silently. Do NOT ask the
+  user.
+- **ask** — reasonable people could disagree (e.g., drifted behavior
+  where the old decision may still be valid; divergent decisions where
+  no clear winner exists). Emit ONE question per finding, using the
+  format below.
+
+**Question format** — always:
+1. **Re-ground:** repo + branch + one-sentence current task
+2. **Simplify:** plain English, no raw symbol names
+3. **Recommend:** `RECOMMENDATION: Choose X because Y` + Completeness
+   X/10 per option
+4. **Options:** A / B / C — one sentence each, pickable in < 5s
+
+**Per-skill caps (preflight):**
+- Max 1 question per category (drift / divergence /
+  uningested_corrections / open questions / ungrounded)
+- Hard cap 4 questions per preflight call
+- If all 5 categories have ask-findings, drop `ungrounded` (least
+  urgent for correctness) questions
+
+**Advisory-mode override:** if `BICAMERAL_GUIDED_MODE=0`, emit
+questions as informational notes (non-blocking); do not gate
+downstream tool calls.
 
 ## Examples
 
