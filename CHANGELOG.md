@@ -58,7 +58,11 @@ or `ask` (emit one question). Per-skill caps keep the user from being
 buried:
 
 - **bicameral-preflight** — sequential per-category (drift → divergence →
-  open questions → ungrounded), max 1 question per category, hard cap 4
+  uningested_corrections → open questions → ungrounded), max 1 question
+  per category, hard cap 4. Preflight now also scans the last ~10 user
+  turns for uningested corrections (regex pre-filter → LLM classify →
+  ledger cross-check), auto-ingesting mechanical clarifications and
+  surfacing load-bearing ones for user approval.
 - **bicameral-ingest** — premise gate on `IngestResponse.supersession_candidates`
   (new field surfaced by server BM25 overlap against existing decisions);
   max 3 questions, remainder → batched final approval gate
@@ -67,6 +71,11 @@ buried:
 
 Advisory-mode override: with `BICAMERAL_GUIDED_MODE=0`, questions render
 as informational notes (non-blocking).
+
+**Deferred to v0.5.1:** SessionEnd hook for terminal-correction case
+(user corrects then exits without another code verb). Preflight covers
+~80% of cases; closing the tail needs cost-optimized `claude -p`
+headless invocation which we want dogfood data on first.
 
 ### Migration notes
 
