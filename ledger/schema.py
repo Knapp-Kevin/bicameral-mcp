@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 #   - edges: yields(input_span→decision), binds_to(decision→code_region),
 #             locates(symbol→code_region)
 #   - removed: maps_to, implements
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Analyzers
 _ANALYZERS = [
@@ -209,12 +209,25 @@ _META = [
 
 
 async def _execute_define_idempotent(client: LedgerClient, sql: str) -> None:
-    """Run a DEFINE statement; treat "already exists" as success."""
+    """Run a DEFINE statement; treat "already exists" as success.
+
+    Also catches "already contains" — SurrealDB's error when a UNIQUE index
+    definition is attempted on a table that already has duplicate rows. This
+    lets the server start up so the migration that cleans the stale data can
+    actually run. The migration re-issues the DEFINE INDEX after cleanup.
+    """
     try:
         await client.execute(sql)
     except LedgerError as exc:
-        if "already exists" not in str(exc):
+        msg = str(exc)
+        if "already exists" not in msg and "already contains" not in msg:
             raise
+        if "already contains" in msg:
+            logger.warning(
+                "[schema] DEFINE INDEX skipped — existing data violates UNIQUE "
+                "constraint (%s). Migration will clean stale rows and re-apply.",
+                sql.split("ON")[0].strip(),
+            )
 
 
 async def init_schema(client: LedgerClient) -> None:
@@ -332,12 +345,75 @@ async def _migrate_v3_to_v4(client: LedgerClient) -> None:
     logger.info("[migration] v3 → v4: complete")
 
 
+async def _migrate_v4_to_v5(client: LedgerClient) -> None:
+    """v4 → v5: Remove stale v3-era yields edges and deduplicate.
+
+    Some DBs that went through v3→v4 still have residual source_span→intent
+    edges in the yields table (the REMOVE TABLE in v3→v4 silently failed).
+    Those stale edges prevent DEFINE INDEX idx_yields_unique from being
+    applied, which broke startup. This migration:
+
+      1. Deletes any yields edge whose `in` is a source_span record
+         or whose `out` is an intent record (v3-era types).
+      2. Deduplicates remaining yields edges by (in, out), keeping
+         the first-seen record per pair.
+      3. Re-applies the unique index now that the table is clean.
+    """
+    # Step 1: Remove stale v3 edges
+    try:
+        stale = await client.query(
+            "SELECT id FROM yields "
+            "WHERE type::string(in) STARTS WITH 'source_span:' "
+            "   OR type::string(out) STARTS WITH 'intent:'"
+        )
+        for row in (stale or []):
+            try:
+                await client.execute(f"DELETE {row['id']}")
+            except Exception:
+                pass
+        logger.info(
+            "[migration] v4 → v5: removed %d stale v3 yields edges",
+            len(stale or []),
+        )
+    except Exception as exc:
+        logger.warning("[migration] v4 → v5: stale-edge cleanup failed: %s", exc)
+
+    # Step 2: Deduplicate remaining yields by (in, out)
+    try:
+        all_yields = await client.query("SELECT id, in, out FROM yields")
+        seen: set[tuple[str, str]] = set()
+        removed = 0
+        for row in (all_yields or []):
+            key = (str(row.get("in", "")), str(row.get("out", "")))
+            if key in seen:
+                try:
+                    await client.execute(f"DELETE {row['id']}")
+                    removed += 1
+                except Exception:
+                    pass
+            else:
+                seen.add(key)
+        if removed:
+            logger.info("[migration] v4 → v5: removed %d duplicate yields edges", removed)
+    except Exception as exc:
+        logger.warning("[migration] v4 → v5: dedup failed: %s", exc)
+
+    # Step 3: Re-apply the unique index now that the table is clean
+    for sql in [
+        "DEFINE INDEX idx_yields_unique ON yields FIELDS in, out UNIQUE",
+    ]:
+        await _execute_define_idempotent(client, sql)
+
+    logger.info("[migration] v4 → v5: yields table clean, unique index applied")
+
+
 # Registry: version → migration function that brings DB from version-1 to version
 _MIGRATIONS: dict[int, ...] = {
     1: _migrate_v0_to_v1,
     2: _migrate_v1_to_v2,
     3: _migrate_v2_to_v3,
     4: _migrate_v3_to_v4,
+    5: _migrate_v4_to_v5,
 }
 
 
