@@ -1,5 +1,9 @@
 """Anonymous, privacy-first telemetry for bicameral-mcp.
 
+Events are sent to a Cloudflare Worker relay (telemetry-relay/) which validates
+the schema, rate-limits per device, and forwards to PostHog using a server-side
+secret. The PostHog API key is never in this file or any client code.
+
 What IS collected:
   - Tool name         ("bicameral.ingest")
   - Server version    ("0.5.3")
@@ -17,8 +21,8 @@ The distinct_id is a random UUID stored at ~/.bicameral/device_id — generated 
 per machine, never linked to a real identity. There is no cross-session linkage.
 
 Opt out at any time:
-  export BICAMERAL_TELEMETRY=0        # environment variable (persistent in shell profile)
-  BICAMERAL_TELEMETRY=0 bicameral-mcp # one-off
+  export BICAMERAL_TELEMETRY=0        # environment variable
+  BICAMERAL_TELEMETRY=0 bicameral-mcp # one-off per invocation
 
 Data lives in Bicameral's private PostHog project. To access the team dashboard,
 reach out to jin@bicameral-ai.com.
@@ -26,19 +30,16 @@ reach out to jin@bicameral-ai.com.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import threading
 import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Write-only project API key — safe to ship in source.
-# Replace with your PostHog project key before deploying.
-# Get it from: https://app.posthog.com → Project Settings → Project API Key
-_POSTHOG_KEY = "phc_REPLACE_WITH_YOUR_POSTHOG_PROJECT_KEY"
-_POSTHOG_HOST = "https://app.posthog.com"
-
+_RELAY_URL = "https://telemetry.bicameral-ai.com/event"
 _TELEMETRY_OFF = frozenset({"0", "false", "no", "off"})
 
 
@@ -60,8 +61,23 @@ def _get_device_id() -> str:
         device_file.write_text(did)
         return did
     except Exception:
-        # Fallback: ephemeral ID so telemetry never crashes the caller.
         return str(uuid.uuid4())
+
+
+def _send_bg(payload: dict) -> None:
+    """POST to the relay in a daemon thread. Never raises."""
+    try:
+        import urllib.request
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            _RELAY_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=3)
+    except Exception as exc:
+        logger.debug("[telemetry] relay POST failed (non-fatal): %s", exc)
 
 
 def record_event(
@@ -71,23 +87,16 @@ def record_event(
     version: str,
     diagnostic: dict | None = None,
 ) -> None:
-    """Capture a tool-call event to PostHog. Never raises. Fire-and-forget.
+    """Queue a tool-call event to the relay. Fire-and-forget. Never raises.
 
     diagnostic values must be integers or floats — strings are silently dropped
     to ensure no user content leaks through this path.
     """
     if not _is_enabled():
         return
-    if _POSTHOG_KEY.startswith("phc_REPLACE"):
-        # Key not configured — skip silently rather than erroring.
-        return
     try:
-        import posthog  # type: ignore[import]
-
-        posthog.api_key = _POSTHOG_KEY
-        posthog.host = _POSTHOG_HOST
-
-        props: dict = {
+        payload: dict = {
+            "distinct_id": _get_device_id(),
             "tool": tool_name,
             "version": version,
             "duration_ms": duration_ms,
@@ -99,12 +108,9 @@ def record_event(
                 if isinstance(v, (int, float, bool))
             }
             if safe_diag:
-                props["diagnostic"] = safe_diag
+                payload["diagnostic"] = safe_diag
 
-        posthog.capture(
-            distinct_id=_get_device_id(),
-            event="tool_used",
-            properties=props,
-        )
+        t = threading.Thread(target=_send_bg, args=(payload,), daemon=True)
+        t.start()
     except Exception as exc:
-        logger.debug("[telemetry] capture failed (non-fatal): %s", exc)
+        logger.debug("[telemetry] record_event failed (non-fatal): %s", exc)
