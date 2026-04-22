@@ -49,11 +49,36 @@ from handlers.update import get_update_notice, handle_update
 from dashboard.server import get_dashboard_server
 
 SERVER_NAME = "bicameral-mcp"
-try:
-    from importlib.metadata import version as _pkg_version
-    SERVER_VERSION = _pkg_version("bicameral-mcp")
-except Exception:
-    SERVER_VERSION = "0.1.0"
+
+
+def _resolve_server_version() -> str:
+    """Return the version of the code actually running.
+
+    Prefers pyproject.toml (authoritative when running from source) over the
+    installed-package metadata, which may be stale when the source tree is
+    ahead of the last `pip install`.
+    """
+    import re
+    from pathlib import Path
+
+    here = Path(__file__).parent
+    for candidate in (here, here.parent):
+        toml = candidate / "pyproject.toml"
+        if toml.exists():
+            m = re.search(
+                r'^version\s*=\s*"([^"]+)"', toml.read_text(), re.MULTILINE
+            )
+            if m:
+                return m.group(1)
+
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("bicameral-mcp")
+    except Exception:
+        return "0.1.0"
+
+
+SERVER_VERSION = _resolve_server_version()
 EXPECTED_TOOL_NAMES = [
     "bicameral.link_commit",
     "bicameral.ingest",
@@ -746,6 +771,12 @@ def cli_main(argv: list[str] | None = None) -> int:
         default=None,
         help="path to the repo to analyze (auto-detected if omitted)",
     )
+    setup_parser.add_argument(
+        "--history-path",
+        default=None,
+        metavar="PATH",
+        help="separate directory for .bicameral/ history storage (default: same as repo)",
+    )
 
     parser.add_argument(
         "--smoke-test",
@@ -761,7 +792,7 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     if args.command == "setup":
         from setup_wizard import run_setup
-        return run_setup(args.repo_path)
+        return run_setup(args.repo_path, args.history_path)
 
     if args.smoke_test:
         result = asyncio.run(run_smoke_test())
