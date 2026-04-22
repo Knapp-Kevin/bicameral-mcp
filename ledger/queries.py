@@ -434,6 +434,114 @@ async def get_decisions_for_file(
     return results
 
 
+async def get_decisions_for_files(
+    client: LedgerClient,
+    file_paths: list[str],
+) -> list[dict]:
+    """Bulk reverse traversal: given a list of file paths, return all decisions
+    pinned to any code_region in those files.
+
+    Same shape as get_decisions_for_file but batched — avoids N+1 queries
+    when the caller has several candidate files from a code locator search.
+    """
+    if not file_paths:
+        return []
+
+    rows = await client.query(
+        """
+        SELECT
+            type::string(id) AS region_id,
+            file_path,
+            symbol_name,
+            start_line,
+            end_line,
+            purpose,
+            content_hash,
+            <-binds_to<-decision.{
+                id,
+                description,
+                source_type,
+                source_ref,
+                status,
+                product_signoff,
+                created_at
+            } AS decisions
+        FROM code_region
+        WHERE file_path IN $fps
+        """,
+        {"fps": file_paths},
+    )
+
+    results = []
+    seen_decision_ids: set[str] = set()
+    decision_id_set: set[str] = set()
+    for region_row in rows:
+        region = {
+            "file_path": region_row.get("file_path", ""),
+            "symbol": region_row.get("symbol_name", ""),
+            "lines": (region_row.get("start_line", 0), region_row.get("end_line", 0)),
+            "purpose": region_row.get("purpose", ""),
+            "content_hash": region_row.get("content_hash", ""),
+        }
+        for decision in (region_row.get("decisions") or []):
+            if decision is None:
+                continue
+            did = str(decision.get("id", ""))
+            if did in seen_decision_ids:
+                continue
+            seen_decision_ids.add(did)
+            decision_id_set.add(did)
+            results.append({
+                "decision_id": did,
+                "description": decision.get("description", ""),
+                "source_type": decision.get("source_type", ""),
+                "source_ref": decision.get("source_ref", ""),
+                "source_excerpt": "",
+                "meeting_date": "",
+                "ingested_at": str(decision.get("created_at", "")),
+                "status": decision.get("status", "ungrounded"),
+                "product_signoff": decision.get("product_signoff"),
+                "code_region": region,
+            })
+
+    # Backfill source_excerpt + meeting_date
+    if decision_id_set:
+        excerpt_rows = await client.query(
+            """
+            SELECT
+                type::string(id) AS decision_id,
+                <-yields<-input_span.{text, meeting_date} AS source_spans
+            FROM decision
+            WHERE type::string(id) IN $ids
+            """,
+            {"ids": list(decision_id_set)},
+        )
+        desc_by_decision = {e["decision_id"]: e.get("description", "") for e in results}
+        excerpt_by_decision: dict[str, tuple[str, str]] = {}
+        for r in (excerpt_rows or []):
+            did = str(r.get("decision_id", ""))
+            desc = desc_by_decision.get(did, "")
+            spans = r.get("source_spans") or []
+            real_spans = [
+                s for s in spans
+                if s and s.get("text") and s.get("text") != desc
+            ]
+            first = real_spans[0] if real_spans else None
+            if first:
+                excerpt_by_decision[did] = (
+                    str(first.get("text") or ""),
+                    str(first.get("meeting_date") or ""),
+                )
+        for entry in results:
+            did = entry["decision_id"]
+            if did in excerpt_by_decision:
+                excerpt, mdate = excerpt_by_decision[did]
+                entry["source_excerpt"] = excerpt
+                entry["meeting_date"] = mdate
+
+    return results
+
+
 async def get_undocumented_symbols(
     client: LedgerClient,
     file_path: str,

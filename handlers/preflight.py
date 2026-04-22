@@ -39,6 +39,8 @@ from contracts import (
     BriefDecision,
     BriefDivergence,
     BriefGap,
+    CodeRegionSummary,
+    DecisionMatch,
     PreflightResponse,
 )
 from handlers.brief import handle_brief, _to_brief_decision
@@ -161,6 +163,105 @@ def _extract_open_questions(brief_response) -> list[BriefGap]:
     ]
 
 
+async def _region_anchored_search(
+    ctx,
+    topic: str,
+    max_files: int = 5,
+) -> list[DecisionMatch]:
+    """topic → code_locator.search_code → file_paths → decisions pinned to those regions.
+
+    Returns DecisionMatch objects with confidence=0.9 (direct pin, not keyword match).
+    Falls back to empty list if the code locator is unavailable or the index is empty.
+    """
+    code_locator = getattr(ctx, "code_locator", None)
+    if code_locator is None:
+        return []
+
+    try:
+        hits = code_locator.search_code(topic)
+    except Exception as exc:
+        logger.debug("[preflight:region] code locator search failed: %s", exc)
+        return []
+
+    seen: set[str] = set()
+    file_paths: list[str] = []
+    for h in hits:
+        fp = h.get("file_path", "")
+        if fp and fp not in seen:
+            seen.add(fp)
+            file_paths.append(fp)
+        if len(file_paths) >= max_files:
+            break
+
+    if not file_paths:
+        return []
+
+    try:
+        raw = await ctx.ledger.get_decisions_for_files(file_paths)
+    except Exception as exc:
+        logger.debug("[preflight:region] ledger region lookup failed: %s", exc)
+        return []
+
+    matches: list[DecisionMatch] = []
+    seen_ids: set[str] = set()
+    for d in raw:
+        did = d.get("decision_id", "")
+        if did in seen_ids:
+            continue
+        seen_ids.add(did)
+        region_dict = d.get("code_region")
+        regions = []
+        if region_dict:
+            regions = [CodeRegionSummary(
+                file_path=region_dict.get("file_path", ""),
+                symbol=region_dict.get("symbol", ""),
+                lines=tuple(region_dict.get("lines", (0, 0))),
+                purpose=region_dict.get("purpose", ""),
+            )]
+
+        status = str(d.get("status") or "ungrounded")
+        if status not in ("reflected", "drifted", "pending", "ungrounded"):
+            status = "ungrounded" if not regions else "pending"
+
+        matches.append(DecisionMatch(
+            decision_id=d.get("decision_id", ""),
+            description=d.get("description", ""),
+            status=status,
+            confidence=0.9,
+            source_ref=d.get("source_ref", ""),
+            code_regions=regions,
+            drift_evidence="",
+            related_constraints=[],
+            source_excerpt=d.get("source_excerpt", ""),
+            meeting_date=d.get("meeting_date", ""),
+            product_signoff=d.get("product_signoff"),
+        ))
+
+    return matches
+
+
+def _merge_decision_matches(
+    region: list[DecisionMatch],
+    bm25: list[DecisionMatch],
+) -> list[DecisionMatch]:
+    """Union of region-anchored and BM25 matches, deduplicated by decision_id.
+
+    Region-anchored results come first (higher precision). BM25 results fill in
+    decisions that exist in the ledger but aren't yet pinned to code regions.
+    """
+    seen: set[str] = set()
+    merged: list[DecisionMatch] = []
+    for m in region:
+        if m.decision_id not in seen:
+            seen.add(m.decision_id)
+            merged.append(m)
+    for m in bm25:
+        if m.decision_id not in seen:
+            seen.add(m.decision_id)
+            merged.append(m)
+    return merged
+
+
 async def handle_preflight(
     ctx,
     topic: str,
@@ -217,7 +318,20 @@ async def handle_preflight(
 
     sources_chained: list[str] = []
 
-    # Step 1 — call search. Cheap, single ledger query.
+    # Step 1a — region-anchored search: topic → code locator → pinned decisions.
+    # This is the primary retrieval path: it finds decisions by which code regions
+    # the proposed change would touch, not by keyword overlap on decision text.
+    region_matches: list[DecisionMatch] = []
+    try:
+        region_matches = await _region_anchored_search(ctx, topic)
+        if region_matches:
+            sources_chained.append("region")
+    except Exception as exc:
+        logger.debug("[preflight] region search failed: %s", exc)
+
+    # Step 1b — BM25 text search on decision descriptions (fallback / supplement).
+    # Catches decisions not yet pinned to code regions (ungrounded), and decisions
+    # whose text happens to overlap with the topic vocabulary.
     try:
         search_resp = await handle_search_decisions(
             ctx,
@@ -235,6 +349,12 @@ async def handle_preflight(
             reason="no_matches",
             guided_mode=guided_mode,
         )
+
+    # Merge: region-anchored results first (direct pin = high precision),
+    # BM25 fills in decisions that aren't yet pinned to any code region.
+    if region_matches:
+        merged = _merge_decision_matches(region_matches, search_resp.matches)
+        search_resp = search_resp.model_copy(update={"matches": merged})
 
     if not search_resp.matches:
         return PreflightResponse(

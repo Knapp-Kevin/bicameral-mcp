@@ -20,6 +20,7 @@ from .queries import (
     get_all_decisions,
     get_compliance_verdict,
     get_decisions_for_file,
+    get_decisions_for_files,
     get_regions_for_files,
     get_regions_without_hash,
     get_source_cursor,
@@ -161,6 +162,10 @@ class SurrealDBLedgerAdapter:
     async def get_decisions_for_file(self, file_path: str) -> list[dict]:
         await self._ensure_connected()
         return await get_decisions_for_file(self._client, file_path)
+
+    async def get_decisions_for_files(self, file_paths: list[str]) -> list[dict]:
+        await self._ensure_connected()
+        return await get_decisions_for_files(self._client, file_paths)
 
     async def get_undocumented_symbols(self, file_path: str) -> list[str]:
         await self._ensure_connected()
