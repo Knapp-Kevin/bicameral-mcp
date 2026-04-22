@@ -515,27 +515,16 @@ def _write_collaboration_config(
     print(f"  Telemetry: {'on — anonymous usage stats' if telemetry else 'off'}")
 
 
-def _ensure_gitignore(data_path: Path, mode: str = "solo") -> None:
-    """Configure .gitignore for the selected collaboration mode.
+def _patch_gitignore(path: Path, entries: list[str], comment: str) -> None:
+    """Idempotently write bicameral entries into a .gitignore file.
 
-    Solo mode: ignore all of .bicameral/
-    Team mode: ignore only .bicameral/local/ (events/ and config.yaml are committed)
+    Removes any pre-existing bicameral block first to avoid stale entries
+    when upgrading from solo→team or when data_path changes.
     """
-    gitignore = data_path / ".gitignore"
-
-    if mode == "team":
-        entries = [".bicameral/local/"]
-        comment = "# Bicameral MCP local data (team mode — events/ is committed)"
-    else:
-        entries = [".bicameral/"]
-        comment = "# Bicameral MCP local data"
-
-    if gitignore.exists():
-        content = gitignore.read_text()
+    if path.exists():
+        content = path.read_text()
         lines = content.splitlines()
-
-        # Remove any existing bicameral entries to avoid conflicts
-        cleaned = []
+        cleaned: list[str] = []
         skip_next_blank = False
         for line in lines:
             stripped = line.strip()
@@ -550,24 +539,54 @@ def _ensure_gitignore(data_path: Path, mode: str = "solo") -> None:
                 continue
             skip_next_blank = False
             cleaned.append(line)
-
-        # Remove trailing blank lines
         while cleaned and not cleaned[-1].strip():
             cleaned.pop()
-
         content = "\n".join(cleaned)
         if content and not content.endswith("\n"):
             content += "\n"
         content += f"\n{comment}\n"
         for entry in entries:
             content += f"{entry}\n"
-        gitignore.write_text(content)
+        path.write_text(content)
     else:
-        lines = [comment]
-        lines.extend(entries)
-        gitignore.write_text("\n".join(lines) + "\n")
+        path.write_text(f"{comment}\n" + "".join(f"{e}\n" for e in entries))
 
-    print(f"  Updated .gitignore for {mode} mode")
+
+def _ensure_gitignore(
+    data_path: Path,
+    mode: str = "solo",
+    repo_path: Path | None = None,
+) -> None:
+    """Configure .gitignore entries for the selected collaboration mode.
+
+    data_path: where .bicameral/ history lives (events + local state).
+    repo_path: the code repo being analyzed.  When it differs from data_path
+               (history stored in a private parent), the public repo's
+               .gitignore gets a blanket `.bicameral/` rule so stale local
+               state from a prior setup can never slip into the public repo.
+
+    Modes applied to data_path/.gitignore:
+      team: `.bicameral/local/`  (events/ committed, local/ ignored)
+      solo: `.bicameral/`        (whole dir ignored)
+    """
+    if mode == "team":
+        data_entries = [".bicameral/local/"]
+        data_comment = "# Bicameral MCP local data (team mode — events/ is committed)"
+    else:
+        data_entries = [".bicameral/"]
+        data_comment = "# Bicameral MCP local data"
+
+    _patch_gitignore(data_path / ".gitignore", data_entries, data_comment)
+    print(f"  Updated {data_path}/.gitignore for {mode} mode")
+
+    # When history lives in a separate repo, also guard the public code repo.
+    if repo_path is not None and repo_path.resolve() != data_path.resolve():
+        _patch_gitignore(
+            repo_path / ".gitignore",
+            [".bicameral/"],
+            "# Bicameral MCP local data (history stored in parent repo)",
+        )
+        print(f"  Updated {repo_path}/.gitignore — .bicameral/ fully ignored (history in parent)")
 
 
 def run_setup(repo_hint: str | None = None, history_hint: str | None = None) -> int:
@@ -604,7 +623,7 @@ def run_setup(repo_hint: str | None = None, history_hint: str | None = None) -> 
     guided = _select_guided_mode()
     telemetry = _select_telemetry()
     _write_collaboration_config(data_path, collab_mode, guided=guided, telemetry=telemetry)
-    _ensure_gitignore(data_path, mode=collab_mode)
+    _ensure_gitignore(data_path, mode=collab_mode, repo_path=repo_path)
 
     if collab_mode == "team":
         events_dir = data_path / ".bicameral" / "events"

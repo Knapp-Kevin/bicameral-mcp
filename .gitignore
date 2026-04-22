@@ -16,5 +16,5 @@ test-results/
 
 .gstack/
 
-# Bicameral MCP local data (team mode — events/ is committed)
-.bicameral/local/
+# Bicameral MCP local data (history stored in parent repo)
+.bicameral/
