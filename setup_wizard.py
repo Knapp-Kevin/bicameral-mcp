@@ -165,14 +165,19 @@ def _select_agents() -> list[str]:
 
 
 def _detect_runner() -> tuple[str, list[str]]:
-    """Detect the best available Python package runner.
+    """Detect the best available runner for bicameral-mcp.
 
-    uvx is intentionally not used — bicameral-mcp bundles ML dependencies
-    (sentence-transformers, cocoindex) that are too large for ephemeral runs.
-    pipx install gives a persistent, upgradeable install.
+    Preference order:
+      1. bicameral-mcp binary on PATH — uses the actual installed environment,
+         so local subpackages (dashboard/, etc.) and editable installs work.
+      2. python3 -m bicameral_mcp — fallback for source checkouts / venvs.
+
+    pipx run is intentionally NOT used: it downloads a fresh ephemeral copy
+    from PyPI on every server start, which misses local-only modules and can
+    run a different version than what the user installed.
     """
-    if shutil.which("pipx"):
-        return ("pipx", ["run", "bicameral-mcp"])
+    if shutil.which("bicameral-mcp"):
+        return ("bicameral-mcp", [])
     python = "python3" if shutil.which("python3") else "python"
     return (python, ["-m", "bicameral_mcp"])
 
@@ -587,9 +592,10 @@ def run_setup(repo_hint: str | None = None, history_hint: str | None = None) -> 
 
     # Step 3: Runner check
     command, _ = _detect_runner()
-    if command not in ("pipx",):
-        print(f"\n  Note: using '{command} -m bicameral_mcp' as runner.")
-        print("  Install a package runner for zero-install: pip install pipx")
+    if command not in ("bicameral-mcp",):
+        print(f"\n  Note: bicameral-mcp binary not found on PATH.")
+        print(f"  Using '{command} -m bicameral_mcp' as runner.")
+        print("  Install for a cleaner setup: pip install bicameral-mcp")
 
     # Step 4: Collaboration mode + guided intensity + telemetry + gitignore
     collab_mode = _select_collaboration_mode()
