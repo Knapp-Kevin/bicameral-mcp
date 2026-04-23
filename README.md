@@ -94,6 +94,77 @@ Verify it works:
 bicameral-mcp --smoke-test
 ```
 
+### Don't have pipx?
+
+**macOS**
+```bash
+brew install pipx
+pipx ensurepath
+```
+
+**Linux**
+```bash
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+```
+
+**Windows**
+```powershell
+python -m pip install --user pipx
+python -m pipx ensurepath
+```
+
+Then restart your terminal and re-run the install command above.
+
+---
+
+## Core Concepts
+
+### Decision Status
+
+Every tracked decision has a status derived at query time — never stored. This makes Bicameral immune to rebase, squash, and cherry-pick.
+
+| Status | Meaning |
+|---|---|
+| **reflected** ✓ | Code was verified to implement this decision |
+| **drifted** ⚠ | Code changed since the decision was last verified |
+| **ungrounded** ○ | Decision tracked, but no matching code region found |
+| **pending** | Code region found, but not yet verified by the agent |
+| **gap** ◈ | Open question — a known unknown that needs an answer before the code can be correct |
+| **superseded** — | Replaced by a later decision |
+
+### When Does `link_commit` Run?
+
+`link_commit` syncs a commit's changes into the ledger — it recomputes content hashes and re-evaluates drift for every bound decision.
+
+It fires automatically in three ways:
+
+1. **After every `bicameral.ingest`** — auto-chained by the server
+2. **After git commits/merges/pulls** — via the PostToolUse hook installed by `setup`
+3. **Before every `bicameral.preflight`** — lazy catch-up if HEAD has advanced since the last sync
+
+If you commit outside of Claude Code (e.g., from a terminal), the next preflight call will sync the ledger before surfacing context.
+
+### Collaboration Modes
+
+| | Solo (default) | Team |
+|---|---|---|
+| **Who** | Individual eval or single-dev use | Any mix of devs, PMs, designers |
+| **Storage** | Local only (gitignored) | Local DB + git-committed event files |
+| **Sharing** | Nothing shared | Normal `git push`/`git pull` |
+| **Merge conflicts** | N/A | Zero — per-user append-only files |
+
+In **team mode**, a PM ingests a PRD; when a dev pulls, `preflight` surfaces those decisions as coding context and the dashboard shows what still needs implementation.
+
+```
+.bicameral/
+├── events/                ← committed to git (shared decisions)
+│   ├── pm@co.com.jsonl    ← PM's ingested PRDs and transcripts
+│   └── dev@co.com.jsonl   ← developer's commit syncs
+├── config.yaml            ← committed (mode, guided flag)
+└── local/                 ← gitignored (materialized state, DB)
+```
+
 ---
 
 ## What `setup` Installs
@@ -129,64 +200,6 @@ rm -rf .claude/skills/bicameral-*/
 
 # 5. Remove the .gitignore entry
 #    Delete the "# Bicameral MCP" block from .gitignore.
-```
-
----
-
-## Core Concepts
-
-### Decision Status
-
-Every tracked decision has a status derived at query time — never stored. This makes Bicameral immune to rebase, squash, and cherry-pick.
-
-| Status | Meaning |
-|---|---|
-| **reflected** ✓ | Code was verified to implement this decision |
-| **drifted** ⚠ | Code changed since the decision was last verified |
-| **ungrounded** ○ | Decision tracked, but no matching code region found |
-| **pending** | Code region found, but not yet verified by the agent |
-| **gap** ◈ | Open question — a known unknown that needs an answer before the code can be correct |
-| **superseded** — | Replaced by a later decision |
-
-### How Grounding Works
-
-When you ingest a decision, Bicameral tries to find the code that implements it:
-
-1. **Caller-supplied regions** (v0.4.23+, preferred) — the agent runs `validate_symbols` + `search_code` before ingesting and passes explicit `code_regions`. Exact, zero false positives.
-2. **Server-side BM25 fallback** — when no regions are supplied, the server runs BM25 text search + tree-sitter symbol extraction. Good for abstract decisions without an obvious code anchor.
-
-Once a region is bound, `bicameral.link_commit` stores a content hash. From that point on, any edit to those lines triggers a drift flag.
-
-### When Does `link_commit` Run?
-
-`link_commit` syncs a commit's changes into the ledger — it recomputes content hashes and re-evaluates drift for every bound decision.
-
-It fires automatically in three ways:
-
-1. **After every `bicameral.ingest`** — auto-chained by the server
-2. **After git commits/merges/pulls** — via the PostToolUse hook installed by `setup`
-3. **Before every `bicameral.preflight`** — lazy catch-up if HEAD has advanced since the last sync
-
-If you commit outside of Claude Code (e.g., from a terminal), the next preflight call will sync the ledger before surfacing context.
-
-### Collaboration Modes
-
-| | Solo (default) | Team |
-|---|---|---|
-| **Who** | Individual eval or single-dev use | Any mix of devs, PMs, designers |
-| **Storage** | Local only (gitignored) | Local DB + git-committed event files |
-| **Sharing** | Nothing shared | Normal `git push`/`git pull` |
-| **Merge conflicts** | N/A | Zero — per-user append-only files |
-
-In **team mode**, a PM ingests a PRD; when a dev pulls, `preflight` surfaces those decisions as coding context and the dashboard shows what still needs implementation.
-
-```
-.bicameral/
-├── events/                ← committed to git (shared decisions)
-│   ├── pm@co.com.jsonl    ← PM's ingested PRDs and transcripts
-│   └── dev@co.com.jsonl   ← developer's commit syncs
-├── config.yaml            ← committed (mode, guided flag)
-└── local/                 ← gitignored (materialized state, DB)
 ```
 
 ---
