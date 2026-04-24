@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import AsyncSurreal, RecordID, SurrealError
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,10 @@ class LedgerClient:
         """
         if self._db is None:
             raise RuntimeError("LedgerClient not connected — call await client.connect() first")
-        result = await self._db.query(sql, vars)
+        try:
+            result = await self._db.query(sql, vars)
+        except SurrealError as exc:
+            raise LedgerError(f"SurrealDB rejected query: {exc}\nSQL: {sql[:300]}") from exc
         if isinstance(result, str):
             raise LedgerError(f"SurrealDB rejected query: {result}\nSQL: {sql[:300]}")
         return _normalize(result) if isinstance(result, list) else []
@@ -110,7 +113,10 @@ class LedgerClient:
         """
         if self._db is None:
             raise RuntimeError("LedgerClient not connected")
-        result = await self._db.query(sql, vars)
+        try:
+            result = await self._db.query(sql, vars)
+        except SurrealError as exc:
+            raise LedgerError(f"SurrealDB rejected statement: {exc}\nSQL: {sql[:300]}") from exc
         if isinstance(result, str):
             raise LedgerError(f"SurrealDB rejected statement: {result}\nSQL: {sql[:300]}")
 
