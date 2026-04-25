@@ -24,7 +24,7 @@ from code_locator.indexing.symbol_extractor import EXTENSION_LANGUAGE
 from contracts import DetectDriftResponse, DriftEntry, LinkCommitResponse
 from handlers.link_commit import handle_link_commit
 from ledger.ast_diff import is_cosmetic_change
-from ledger.status import get_git_content
+from ledger.status import get_git_content, resolve_symbol_lines
 
 logger = logging.getLogger(__name__)
 
@@ -122,12 +122,16 @@ def _enrich_with_cosmetic_hints(
     """Set ``cosmetic_hint=True`` on drifted entries whose HEAD→working-tree
     diff is provably whitespace-only per the strict B1 whitelist.
 
-    Skips non-drifted entries (no diff to classify), entries without a
-    line range, files we can't read at HEAD or working tree, and any
-    extension not in ``EXTENSION_LANGUAGE``. Failures fail-safe to
-    leaving ``cosmetic_hint=False`` — the field defaults to False on
-    DriftEntry, so absence of a hint is indistinguishable from a hint
-    of False.
+    Per-entry alignment: the stored ``entry.lines`` is the baseline anchor
+    (set by ingest, possibly updated by link_commit's symbol-shift heal).
+    Lines at HEAD and at the working tree may have shifted independently,
+    so we re-resolve the symbol against each ref via tree-sitter and slice
+    each ref's content using its own resolved range. If either resolution
+    fails, fail safe to ``cosmetic_hint=False`` — the cosmetic-hint
+    contract is "False is cheap, True must be earned" (V1 plan §B1).
+
+    Skips non-drifted entries, files we can't read, unsupported extensions,
+    and entries whose symbol can't be located at HEAD or working tree.
     """
     drifted = [e for e in entries if e.status == "drifted"]
     if not drifted:
@@ -154,11 +158,31 @@ def _enrich_with_cosmetic_hints(
     wt_lines = wt_full.splitlines()
 
     for entry in drifted:
-        start, end = entry.lines
-        if start <= 0 or end < start:
+        # Use entry.symbol to re-resolve aligned line ranges per ref.
+        # ``entry.lines`` (the baseline anchor) cannot be trusted for
+        # slicing both HEAD and the working tree because shifts on either
+        # side can desync the slice from the symbol body. Resolution
+        # failure → safe default of cosmetic_hint=False.
+        if not entry.symbol:
             continue
-        head_slice = "\n".join(head_lines[start - 1:end])
-        wt_slice = "\n".join(wt_lines[start - 1:end])
+        try:
+            head_range = resolve_symbol_lines(file_path, entry.symbol, repo_path, ref="HEAD")
+            wt_range = resolve_symbol_lines(file_path, entry.symbol, repo_path, ref="working_tree")
+        except Exception as exc:
+            logger.debug("[detect_drift] resolve_symbol_lines failed for %s/%s: %s", file_path, entry.symbol, exc)
+            continue
+        if head_range is None or wt_range is None:
+            continue  # symbol absent at one side — not a cosmetic case
+
+        head_start, head_end = head_range
+        wt_start, wt_end = wt_range
+        if head_start <= 0 or head_end < head_start:
+            continue
+        if wt_start <= 0 or wt_end < wt_start:
+            continue
+
+        head_slice = "\n".join(head_lines[head_start - 1:head_end])
+        wt_slice = "\n".join(wt_lines[wt_start - 1:wt_end])
         if not head_slice or not wt_slice:
             continue
         if head_slice == wt_slice:

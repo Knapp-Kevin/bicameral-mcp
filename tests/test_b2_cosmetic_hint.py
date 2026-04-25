@@ -125,11 +125,21 @@ def test_unsupported_extension_keeps_cosmetic_hint_false(tmp_path):
     assert entry.cosmetic_hint is False
 
 
-def test_invalid_lines_skipped(repo_with_baseline):
-    """Entries with bad line ranges fail safe to False."""
+def test_unresolvable_symbol_skipped(repo_with_baseline):
+    """Entries whose symbol can't be resolved against HEAD/WT fail safe to False.
+
+    Per the V1 alignment refactor, ``entry.lines`` is no longer the
+    slicing input — the enrichment uses ``resolve_symbol_lines`` per
+    ref to align HEAD and working-tree slices to the symbol body. If
+    resolution returns None on either side (symbol absent, missing
+    symbol name, etc.), the hint stays at its False default.
+    """
     repo, rel = repo_with_baseline
     _write_file(repo, rel, "def f(x):\n    return x  +  1\n")
-    entry = _make_entry(status="drifted", lines=(0, 0))
+    # Symbol name that does not exist in the file → resolve_symbol_lines
+    # returns None → enrichment skips this entry.
+    entry = _make_entry(status="drifted", lines=(1, 2))
+    entry.symbol = "nonexistent_symbol"
     _enrich_with_cosmetic_hints([entry], rel, str(repo))
     assert entry.cosmetic_hint is False
 

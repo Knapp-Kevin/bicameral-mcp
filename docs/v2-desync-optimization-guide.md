@@ -20,7 +20,7 @@
 6. [Implementation plan — phased, with hard dependencies](#6-implementation-plan)
 7. [Constraints catalog — synthesized from 12 Codex review passes](#7-constraints-catalog)
 8. [Open questions for human judgment](#8-open-questions)
-9. [Acceptance criteria for V2](#9-acceptance-criteria)
+9. [Acceptance criteria for V2](#9-acceptance-criteria-for-v2)
 10. [References](#10-references)
 
 ---
@@ -97,7 +97,7 @@ Reproduced from Notion (severity tiers as of 2026-04-01, updated through V1):
 
 V1 commits on this branch (`origin/main` is `a5aface`):
 
-```
+```text
 8e226c5 docs: tick V1 desync optimization across CHANGELOG / TODO / PLAN
 a04e54b fix(link_commit): split verification_instruction so relocation cases don't get bind CTA
 89f8076 feat: desync optimization V1 F1 — canonical 13-scenario regression matrix
@@ -340,7 +340,7 @@ DEFINE INDEX idx_rebind_expiry   ON rebind_audit FIELDS outcome, expires_at;
 
 #### Protocol
 
-```
+```text
 Phase 1 — bicameral_rebind(decision_id, old_region_id, new_location | new_region_id,
                            reason, agent_id,
                            expected_old_binding_version,
@@ -451,7 +451,7 @@ V1 A2-light only catches in-process races on `bind`. V2 needs three complementar
 
 ## 6. Implementation plan
 
-```
+```text
 ┌─ Phase 0 (Prereq) ──────────────────────────────────┐
 │ 0a   Migrate resolve_compliance.py → tombstone+CAS  │  ← absolute prerequisite
 │      (no new mutating tools until this is done)     │     (Codex pass-10 #1)
@@ -682,7 +682,7 @@ New MCP tool: returns `{decision_text, code_before, code_after, diff, cas_token:
 
 **Acceptance test for the post-mutation contract** (must ship with C2):
 
-```
+```text
 test_not_relevant_then_restore_cycle:
   1. live binding: tombstone_verdict_id=''
   2. record_compliance_verdict(verdict='not_relevant') → returns history_id_1
@@ -838,7 +838,7 @@ If you're tempted to add a new mutating tool that doesn't follow this pattern, y
 
 The CAS tuple converged after 9 passes to the following **single source of truth** — V2 must use this verbatim across schema, lookup, write upsert, and acceptance tests:
 
-```
+```text
 (decision_id, region_id, content_hash, commit_hash, file_path,
  binding_version, tombstone_verdict_id)
 ```
@@ -1023,7 +1023,7 @@ V2 is shippable when **all** of the following hold:
 
 ### V1 commits on this branch
 
-```
+```text
 8e226c5 docs: tick V1 desync optimization across CHANGELOG / TODO / PLAN
 a04e54b fix(link_commit): split verification_instruction so relocation cases don't get bind CTA
 89f8076 feat: desync optimization V1 F1 — canonical 13-scenario regression matrix
