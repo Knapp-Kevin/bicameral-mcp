@@ -32,18 +32,57 @@ import uuid
 from contracts import LinkCommitResponse, PendingComplianceCheck
 
 
-_VERIFICATION_INSTRUCTION = (
+_VERIFICATION_INSTRUCTION_BASE = (
     "Evaluate each pending_compliance_check — decide whether the code_body "
     "semantically implements the intent_description. Call "
     "bicameral.resolve_compliance with phase=<group phase> and a batch of "
     "verdicts: [{intent_id, region_id, content_hash, compliant, confidence, "
     "explanation}]. Group by phase if the batch mixes phases. One tool call "
-    "resolves the whole batch. "
-    "For pending_grounding_checks: use your own code search (Grep/Read), then "
-    "validate_symbols / extract_symbols to confirm the target, then call "
-    "bicameral.bind with decision_id, file_path, symbol_name, and optionally "
-    "start_line/end_line."
+    "resolves the whole batch."
 )
+
+_GROUNDING_INSTRUCTION_UNGROUNDED = (
+    " For pending_grounding_checks with reason='ungrounded': use your own "
+    "code search (Grep/Read), then validate_symbols / extract_symbols to "
+    "confirm the target, then call bicameral.bind with decision_id, "
+    "file_path, symbol_name, and optionally start_line/end_line."
+)
+
+# V1 D1 / Codex pass-12 finding #2: relocation cases (symbol_disappeared)
+# must NOT route to bicameral.bind. Bind on the new location would leave
+# the old binding live and produce duplicate-binding state under the N:N
+# binds_to relation. Atomic rebind (which retires the stale edge in the
+# same write) ships in V2 (design doc §8 D2 — bicameral_rebind with
+# old-binding CAS + fresh L3 verdict on the new target).
+_GROUNDING_INSTRUCTION_RELOCATION = (
+    " For pending_grounding_checks with reason='symbol_disappeared': "
+    "INFORMATIONAL ONLY. The original_lines / file_path / symbol fields "
+    "tell you where this decision USED to live; safe atomic rebind "
+    "(which retires the stale edge in the same write) ships in V2. "
+    "Do NOT call bicameral.bind on the new location — that would leave "
+    "the old edge live and produce duplicate-binding state. Use git "
+    "history (`git show <prev_ref>:<file_path>` over original_lines) "
+    "to inform a future rebind, but do not bind directly."
+)
+
+
+def _build_verification_instruction(
+    pending_compliance: list,
+    pending_grounding: list[dict],
+) -> str:
+    """Compose the verification instruction conditional on which payloads
+    actually fired. Splits ungrounded vs symbol_disappeared guidance so
+    relocation cases never get an unsafe ``bicameral.bind`` CTA.
+    """
+    parts: list[str] = []
+    if pending_compliance:
+        parts.append(_VERIFICATION_INSTRUCTION_BASE)
+    reasons = {c.get("reason") for c in pending_grounding}
+    if "ungrounded" in reasons:
+        parts.append(_GROUNDING_INSTRUCTION_UNGROUNDED)
+    if "symbol_disappeared" in reasons:
+        parts.append(_GROUNDING_INSTRUCTION_RELOCATION)
+    return "".join(parts)
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +245,11 @@ async def handle_link_commit(ctx, commit_hash: str = "HEAD") -> LinkCommitRespon
     pending_grounding_raw = result.get("pending_grounding_checks", []) or []
 
     has_action_items = bool(pending) or bool(pending_grounding_raw)
+    verification_text = (
+        _build_verification_instruction(pending, pending_grounding_raw)
+        if has_action_items
+        else ""
+    )
 
     flow_id = str(uuid.uuid4())
     sync_state = getattr(ctx, "_sync_state", None)
@@ -224,7 +268,7 @@ async def handle_link_commit(ctx, commit_hash: str = "HEAD") -> LinkCommitRespon
         range_size=result.get("range_size", 0),
         pending_compliance_checks=pending,
         pending_grounding_checks=pending_grounding_raw,
-        verification_instruction=_VERIFICATION_INSTRUCTION if has_action_items else "",
+        verification_instruction=verification_text,
         flow_id=flow_id,
     )
     _store_sync_cache(ctx, commit_hash, response)
