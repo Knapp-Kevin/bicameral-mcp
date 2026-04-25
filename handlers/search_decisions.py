@@ -6,7 +6,9 @@ in the same area with their status. Auto-triggers link_commit(HEAD) first.
 
 from __future__ import annotations
 
-from contracts import CodeRegionSummary, DecisionMatch, LinkCommitResponse, SearchDecisionsResponse
+import time
+
+from contracts import CodeRegionSummary, DecisionMatch, LinkCommitResponse, SearchDecisionsResponse, SyncMetrics
 from handlers.action_hints import generate_hints_for_search
 from handlers.link_commit import handle_link_commit
 from handlers.sync_middleware import get_session_start_banner
@@ -18,7 +20,12 @@ async def handle_search_decisions(
     max_results: int = 10,
     min_confidence: float = 0.5,
 ) -> SearchDecisionsResponse:
+    # V1 A3: time the mandatory catch-up so callers can see how long this
+    # handler spent in link_commit. Local timing (not sync_state) so nested
+    # calls don't step on each other's metrics.
+    t0 = time.perf_counter()
     sync_status: LinkCommitResponse = await handle_link_commit(ctx, "HEAD")
+    catchup_ms = round((time.perf_counter() - t0) * 1000, 3)
     banner = await get_session_start_banner(ctx)
 
     raw_matches = await ctx.ledger.search_by_query(query, max_results=max_results, min_confidence=min_confidence)
@@ -76,4 +83,5 @@ async def handle_search_decisions(
     response.action_hints = generate_hints_for_search(
         response, guided_mode=getattr(ctx, "guided_mode", False),
     )
+    response.sync_metrics = SyncMetrics(sync_catchup_ms=catchup_ms)
     return response

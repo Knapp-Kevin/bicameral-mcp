@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 import logging
-from contracts import BindResponse, BindResult, PendingComplianceCheck
+from contracts import BindResponse, BindResult, PendingComplianceCheck, SyncMetrics
+from handlers.sync_middleware import repo_write_barrier
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,22 @@ async def handle_bind(ctx, bindings: list[dict]) -> BindResponse:
       3. Compute content_hash against authoritative_sha.
       4. Upsert code_region + binds_to edge, transition decision ungrounded→pending.
       5. Return PendingComplianceCheck for immediate caller verification.
+
+    V1 A2-light: the whole handler body runs under ``repo_write_barrier``
+    so two concurrent bind calls against the same repo are serialized.
+    Does NOT protect against concurrent resolve_compliance / cross-process
+    writers — those are V2 scope.
+
+    V1 A3: the barrier's hold duration is attached to the response as
+    ``sync_metrics.barrier_held_ms``.
     """
+    async with repo_write_barrier(ctx) as timing:
+        response = await _do_bind(ctx, bindings)
+    response.sync_metrics = SyncMetrics(barrier_held_ms=timing.held_ms)
+    return response
+
+
+async def _do_bind(ctx, bindings: list[dict]) -> BindResponse:
     ledger = ctx.ledger
     if hasattr(ledger, "connect"):
         await ledger.connect()

@@ -279,8 +279,15 @@ async def handle_history(
     5. Apply feature_filter (substring match, case-insensitive).
     6. Truncate at 50 features and set truncated flag.
     """
+    # V1 A3: time the catch-up locally so history can report it.
+    import time as _time
     from handlers.sync_middleware import ensure_ledger_synced
+    from contracts import SyncMetrics
+    _t0 = _time.perf_counter()
     banner = await ensure_ledger_synced(ctx)
+    sync_metrics = SyncMetrics(
+        sync_catchup_ms=round((_time.perf_counter() - _t0) * 1000, 3)
+    )
 
     ledger = ctx.ledger
     if hasattr(ledger, "connect"):
@@ -344,4 +351,5 @@ async def handle_history(
         total_features=total_features,
         as_of=as_of_ref,
         session_start_banner=banner,
+        sync_metrics=sync_metrics,
     )
