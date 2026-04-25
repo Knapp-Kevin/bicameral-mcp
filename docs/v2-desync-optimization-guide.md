@@ -172,6 +172,7 @@ V1's value is operational confidence + one footgun closed + one race narrowed + 
 | 10 | Baseline advancement | `code_region.content_hash` updates only via `link_commit` sweep; no caller-driven advancement. | **B3**: `bicameral_advance_baseline(decision_id, region_id, cas_token, verdict_id)` — only accepts a fresh L3 `compliant` verdict matching all five CAS components. Writes to a single `binds_to` edge; never touches shared region state. No `ast_cosmetic` reason. |
 | 11 | Atomic rebind | Rename → `symbol_disappeared` payload (V1 D1). Manual `bicameral.bind` would create duplicate-binding state under N:N `binds_to`. | **D2**: `bicameral_rebind` with `expected_old_binding_version` + `expected_old_tombstone_verdict_id` CAS, **two-phase** semantics (Codex pass-11 #2): create new as pending → fresh L3 verdict on new target → tombstone old. Closes scenario 8. |
 | 12 | Doctor skill rendering | `.claude/skills/bicameral-doctor/SKILL.md` exists (211 lines) but contains zero `pending_grounding_checks` / `cosmetic_hint` / verdict-related prose. | Once V2 has safe atomic rebind, render the new payloads as advisory context with the (now-safe) bind flow for relocation cases. |
+| 13 | Branch-aware drift report (GitHub #47) | No handler surfaces drift / ungrounded state across a `base_ref..head_ref` range. PR-time and pre-push consumers (#48, #49) have no signal source. | **Phase 6**: `handlers/scan_branch.py` — read-only branch-aware drift report. Reuses Phase 1–4 machinery (per-binding baseline + full-CAS hash comparison + symbol re-resolution + relocation surfacing). Zero new mutating capabilities. Closes #47. |
 
 ### 4.2 V2 product targets
 
@@ -183,6 +184,7 @@ After V2 ships, the user-visible improvements:
 - **Cross-decision baseline isolation.** Each decision-binding has its own baseline; one decision's `advance_baseline` doesn't ripple to peer decisions on the same region.
 - **Reversible verdicts with full audit history.** Operators can see every verdict ever issued for a region, and a contradicting later verdict (e.g. operator restores a tombstone) is recorded in history rather than overwriting.
 - **Scenario 8 flips from xfail to pass** — the canonical "drifted intent recoverable via re-ground" scenario actually works end-to-end.
+- **Branch-aware drift report works** — `bicameral_scan_branch(base_ref, head_ref)` returns drift + ungrounded surfaces between two refs without writing to the ledger. Closes GitHub #47 and unblocks downstream consumers (#48 pre-push hook, #49 PR-comment Action) for follow-up issue-driven work.
 
 ---
 
@@ -489,6 +491,13 @@ V1 A2-light only catches in-process races on `bind`. V2 needs three complementar
 │ .claude/skills/bicameral-doctor/SKILL.md rendering   │
 │ Re-run Codex review (target: pass-13 ships clean)    │
 │ Convert scenario 8 from xfail → expected pass        │
+└─────────────────────┬───────────────────────────────┘
+                      │
+┌─ Phase 6 (Surface) ─▼───────────────────────────────┐
+│ #47  bicameral_scan_branch — read-only branch-aware  │
+│      drift report (closes GitHub #47 fully).         │
+│      Reuses Phase 1–4 machinery; ships zero new      │
+│      mutating capabilities.                          │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -722,6 +731,62 @@ Phase 2 happens through `record_compliance_verdict` per §5.5 + §5.6: a `compli
 - **Codex pass-13**: re-run the adversarial review on the final V2 implementation. Target: clean ship with no remaining critical findings.
 - **Convert scenario 8** in `tests/test_desync_scenarios.py` from `@pytest.mark.xfail(strict=True)` to a normal expected-pass test that exercises the two-phase rebind end-to-end.
 
+### Phase 6 — Surface: `bicameral_scan_branch` (3–5 days, closes GitHub #47)
+
+**Why this is the only scope addition to V2**: Phase 1–5 ship every primitive `#47` needs (per-binding baseline, full-CAS hash comparison, symbol re-resolution, atomic rebind, two-phase verdict flow). The remaining gap to fully closing the issue is one thin read-only handler that wires those primitives at the branch level. No new mutating capabilities. No schema changes. No new contract-surface beyond a single response type. The cost of *not* shipping it inside V2 is leaving the issue open while every prerequisite already exists in the same release.
+
+**Deliverable**: `handlers/scan_branch.py` plus a wiring entry in `server.py`'s MCP tool registry.
+
+**Tool contract**:
+
+```python
+async def handle_scan_branch(
+    ctx,
+    base_ref: str,
+    head_ref: str,
+) -> ScanBranchResponse:
+    """Read-only branch-aware drift report.
+
+    For every code_region on a binds_to edge whose file appears in
+    `git diff --name-only base_ref..head_ref`, compute the live
+    content_hash at head_ref via `git show <head_ref>:<file>` (using
+    the same resolve_symbol_lines + hash logic as link_commit, but
+    WITHOUT writing to the ledger). Surface the diff-style verdict
+    so callers (pre-push hooks, PR-comment Actions, the doctor skill
+    in branch-scope mode) can consume it without mutating state.
+    """
+```
+
+`ScanBranchResponse` (new contract, additive — does not affect any existing response type):
+
+```python
+class ScanBranchResponse(BaseModel):
+    base_ref: str
+    head_ref: str
+    drifted: list[ScanBranchDriftedEntry]      # decisions whose bound code changed on the branch
+    ungrounded: list[ScanBranchUngroundedEntry]  # ungrounded decisions surfaced for caller-LLM bind
+    changed_files: list[str]
+    sweep_scope: Literal["range_diff", "head_only", "range_truncated"]
+    range_size: int
+```
+
+**Implementation notes**:
+
+1. **Read-only invariant** — assert in tests that no `binds_to` edges are written, no `compliance_check` rows inserted, no `compliance_verdict_history` rows appended during the scan. Phase 6's job is to surface state, not modify it.
+2. **Reuses Phase 1–2 machinery** — content-hash comparison goes through the same `resolve_symbol_lines` + `compute_content_hash` path as `derive_status` (per §5.2 / §5.5). Per-binding baseline is read from `binds_to.baseline_content_hash`. CAS is unnecessary because nothing is being written.
+3. **Reuses V2 D2 symbol-relocation surfacing** — when a tracked symbol is absent at `head_ref`, surface it as a relocation candidate via the same `pending_grounding_checks` shape (with `original_lines`) that V1 D1 / V2 D2 already define. Don't invent a new payload.
+4. **No ephemeral indexing** — the original #47 design called for a scratch BM25 index for on-branch re-grounding; that approach was invalidated by v0.6.0's removal of `ground_mappings()` (caller-LLM owns retrieval). #47's own "Updated Framing" section reflects this.
+5. **CLI subcommand** — for #48 (pre-push hook) and #49 (PR-comment Action) to consume `bicameral_scan_branch` later, the handler's response must be JSON-serializable through the standard MCP envelope. No additional CLI work needed for V2 — the soft AC about "callable as a CLI subcommand" is satisfied by the MCP tool registration plus the existing `bicameral-mcp` console-script entry.
+
+**Acceptance** (mirrors #47 ACs verbatim):
+- A branch that modifies a bound function returns that decision in `drifted`.
+- Ungrounded decisions are returned alongside `changed_files` for caller-LLM evaluation.
+- No `binds_to` edges or `compliance_check` rows are written during the scan (test asserts table counts unchanged after `handle_scan_branch` calls).
+- Works with `SURREAL_URL=memory://` in CI (regression test in the existing `test_desync_scenarios.py` fixture style).
+- `Closes #47` on the V2 PR.
+
+**Sequencing**: Phase 6 has no upstream dependencies on Phase 0–5 *except via the per-binding baseline schema* (Phase 1 C0). It can land last (cleanest) or in parallel with Phase 5 polish. Do not start Phase 6 before C0 lands.
+
 ### Effort estimate by phase
 
 | Phase | Estimated effort (single owner, sequential) |
@@ -732,7 +797,8 @@ Phase 2 happens through `record_compliance_verdict` per §5.5 + §5.6: a `compli
 | 3 (reads) | ~1 week |
 | 4 (writes) | 2–3 weeks |
 | 5 (polish) | 2–3 days |
-| **Total** | **7–10 weeks** |
+| 6 (surface — #47) | 3–5 days |
+| **Total** | **~8–11 weeks** |
 
 Phases don't parallelize cleanly because each depends on prior invariants. If multiple engineers, they can work on different deliverables *within* a phase (e.g. C0 vs C0a in Phase 1) but should not skip ahead.
 
@@ -922,6 +988,7 @@ V2 is shippable when **all** of the following hold:
 - [ ] **Edge-vs-region terminology audit** (pass-14 #4): grep proves no V2 implementation code mutates `binding_version` on `code_region`. Every `binding_version` write targets a `binds_to` edge.
 - [ ] **`judge_gaps` migration is implicit, not separate** (pass-14 #3): Phase 0a's `resolve_compliance` migration covers the entire `judge_gaps → resolve_compliance` pipeline. No separate code change to `handlers/gap_judge.py` (read-only) is required or made.
 - [ ] `.claude/skills/bicameral-doctor/SKILL.md` renders `pending_compliance_checks` and `pending_grounding_checks` with the (now-safe) bind / rebind flows.
+- [ ] **`bicameral_scan_branch` ships and closes GitHub #47** (Phase 6): `handlers/scan_branch.py` is registered as an MCP tool; calling it with `(base_ref, head_ref)` returns drifted decisions, ungrounded decisions, and `changed_files` between the two refs. Read-only invariant audited by test (table counts unchanged after scan). PR uses `Closes #47`.
 - [ ] CHANGELOG entry summarizes V2 deliverables; the V1 "Unreleased" entry can roll up into a V2 release version (or both can ship as a single release, depending on team preference).
 
 ### Documentation
@@ -950,7 +1017,8 @@ V2 is shippable when **all** of the following hold:
 - `server.py` — register new MCP tools
 - `tests/test_desync_scenarios.py` — convert scenario 8 from xfail to pass
 - `tests/test_resolve_compliance.py` — assert tombstone, not deletion
-- New tests: `tests/test_record_compliance_verdict.py`, `tests/test_advance_baseline.py`, `tests/test_rebind.py`, `tests/test_a2a_barrier.py`, `tests/test_v6_migration.py`
+- New tests: `tests/test_record_compliance_verdict.py`, `tests/test_advance_baseline.py`, `tests/test_rebind.py`, `tests/test_a2a_barrier.py`, `tests/test_v6_migration.py`, `tests/test_scan_branch.py` (Phase 6)
+- New: `handlers/scan_branch.py` — Phase 6 read-only branch-aware drift report, closes GitHub #47
 - `.claude/skills/bicameral-doctor/SKILL.md` — Phase 5 rendering update
 
 ### V1 commits on this branch
@@ -995,5 +1063,21 @@ V2 is a high-risk, high-reward change. The risk surfaced naturally over 12 revie
 Take your time on Phase 0. It's the foundation everything else stands on. The single best signal that V2 is going well is: every PR through Phase 4 lands with the V1 desync scenario suite still at 12/13 PASS + 1 XFAIL until D2 ships, at which point scenario 8 flips and the suite is 13/13. If at any point a different scenario starts failing or xfailing, you've regressed something — stop and root-cause before continuing.
 
 Involve Jin. He's CODEOWNERS, knows the project trajectory, and the open questions in §8 are exactly the kind of thing he should weigh in on. Don't make him a PR-review-time discovery.
+
+## After V2 ships — workflow change
+
+V2 is the **last release** authored by reverse-mapping deliverables to issues. After V2, the project switches to an **issue-driven workflow**: pick an issue, treat its acceptance criteria as the spec, ship a focused PR with `Closes #N`. No more "we built X, what issue does it sort of fit?" mapping.
+
+Phase 6 (`bicameral_scan_branch`) was added to V2 specifically because it was *already close* — V1 + V2 Phase 1–4 ship every primitive #47 needs, the gap is one read-only handler, and shipping it inside V2 closes the issue cleanly with `Closes #47` on the V2 PR. That's the bar for any future "expand the in-flight release to close an adjacent issue" decision: the underlying machinery must already exist; the addition must be additive (no new mutating capabilities, no schema changes); and the issue's acceptance criteria must be fully satisfiable by the addition.
+
+The natural next-issue-up after V2 ships:
+
+- **#39 (Telemetry Layer 1, P0)** — small, unblocks #41 / #42 / #43 / #44.
+- **#42 (`bicameral.usage_summary`)** — depends on #39; unblocks the third acceptance criterion of #44 (which V2's LLM judge otherwise satisfies).
+- **#41 (drift transition diagnostic)** — depends on #39 + V1's classifier + V2's judge. After #39 lands, all three pieces exist and #41 closes.
+- **#44 (LLM semantic drift judge)** — depends on #42's metric. After #39 + #42 land, V2's judge tooling closes the issue.
+- **#48, #49** — both depend on #47's CLI. After V2 ships #47, these become focused single-PR issues.
+
+That sequence (#39 → #42 → #41 → #44 → #48 → #49) takes the desync queue from "5 open issues V2 can't fully close" to "all 5 closed via small focused PRs over 4–6 weeks," with each PR using `Closes #N` honestly.
 
 Good luck.
