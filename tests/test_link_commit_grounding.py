@@ -185,4 +185,13 @@ async def test_pending_grounding_checks_symbol_not_found(_isolated_ledger):
     assert len(disappeared_checks) >= 1, (
         f"Expected symbol_disappeared grounding check, got: {grounding_checks}"
     )
-    assert disappeared_checks[0]["symbol"] == "fetch_user"
+    entry = disappeared_checks[0]
+    assert entry["symbol"] == "fetch_user"
+    # V1 D1: original_lines lets the caller LLM inspect the prior code via
+    # `git show <prev_ref>:<file_path>` to ground its own retrieval.
+    assert "original_lines" in entry, (
+        f"Expected original_lines in symbol_disappeared payload, got: {entry}"
+    )
+    start, end = entry["original_lines"]
+    assert isinstance(start, int) and isinstance(end, int)
+    assert start >= 1 and end >= start, f"Invalid original_lines {entry['original_lines']}"
