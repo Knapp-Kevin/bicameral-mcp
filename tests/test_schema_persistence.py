@@ -72,28 +72,33 @@ async def test_migration_chain_from_scratch(tmp_path):
 
 @pytest.mark.asyncio
 async def test_destructive_migration_blocked(tmp_path):
-    """Pending destructive migration raises DestructiveMigrationRequired.
+    """DESTRUCTIVE_MIGRATIONS is currently empty — migrate() from any version
+    succeeds without raising DestructiveMigrationRequired.
 
-    Simulates a user on schema v3 upgrading to code that requires v5.
-    The v3→v4 step is destructive — it must be blocked unless
-    allow_destructive=True.
+    If a future migration is added to DESTRUCTIVE_MIGRATIONS, update this
+    test to verify the block-then-allow pattern. For now, verify that
+    allow_destructive=False is safe when there are no destructive steps.
     """
+    from ledger.schema import DESTRUCTIVE_MIGRATIONS
     url = f"surrealkv://{tmp_path / 'ledger.db'}"
     client = LedgerClient(url=url, ns="bicameral", db="ledger")
     await client.connect()
     try:
         await init_schema(client)
-        # Inject a v3 schema version to simulate a pre-v4 database
+        # Inject a v3 schema version to simulate a pre-current database
         await client.execute("DELETE FROM schema_meta")
         await client.execute(
             "CREATE schema_meta SET version = $v, migrated_at = time::now()",
             {"v": 3},
         )
-        with pytest.raises(DestructiveMigrationRequired) as exc_info:
+        if DESTRUCTIVE_MIGRATIONS:
+            with pytest.raises(DestructiveMigrationRequired):
+                await migrate(client, allow_destructive=False)
+        else:
+            # No destructive migrations — allow_destructive=False succeeds
             await migrate(client, allow_destructive=False)
-        msg = str(exc_info.value)
-        assert "v3→v4" in msg
-        assert "bicameral_reset" in msg
+            rows = await client.query("SELECT version FROM schema_meta LIMIT 1")
+            assert rows and rows[0]["version"] == SCHEMA_VERSION
     finally:
         await client.close()
 

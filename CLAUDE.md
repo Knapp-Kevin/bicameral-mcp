@@ -1,5 +1,21 @@
 # MCP Server — Claude Agent Instructions
 
+## Tool Changes Require Skill Changes (Mandatory)
+
+Any change to an MCP tool's behavior — new fields in a response, new status values,
+changed defaults, new tool calls, deprecated params — **must ship with a matching
+update to the relevant `skills/*/SKILL.md`** in the same commit.
+
+This is not optional. A tool change with no skill update is incomplete. The skill
+is the contract between the server and the agent layer; breaking it silently is
+worse than a compile error because it fails at runtime in production sessions.
+
+**Checklist before marking a tool PR complete:**
+- [ ] Did any response field change shape or gain a new value? → Update skill rendering section
+- [ ] Did any default behavior change? → Update skill's "Steps" or "After" section
+- [ ] Did a new tool get added? → Create `skills/<tool-name>/SKILL.md`
+- [ ] Did a status literal gain a new value (e.g. `"proposal"`)? → Update every skill that renders status
+
 ## Auto-Tick Rule
 
 After completing **any** implementation work in this directory:

@@ -520,6 +520,53 @@ This step is a delegation pointer.
 When `judgment_payload` is `null` (the brief had no decisions, or the
 chain failed), skip this step silently.
 
+### 7. Ratify proposals (v0.7.0+)
+
+All decisions ingested by `bicameral.ingest` enter as **proposals** (`signoff.state =
+'proposed'`). Proposals are drift-exempt — drift tracking does not run against them
+until they are ratified. Ratification is the user's explicit sign-off that a decision
+is committed, not just discussed.
+
+**Always surface the ratify prompt after ingest.** Present as a numbered list, then ask:
+
+```
+Captured N decisions as proposals — drift tracking is paused until ratified.
+
+  1  <decision description>
+  2  <decision description>
+  3  <decision description>
+
+Ratify all N? [Y/n or pick: 1 3]  ›
+```
+
+- If there are **≤ 5 decisions**: show the full list, default hint is `[Y/n or pick: 1 3]`
+- If there are **> 5 decisions**: default the hint to `all` and let them exclude: `[all / pick: 1 3 5 / none]`
+- User types: `all` / `y` / enter → ratify everything; `1 3` (space-separated numbers) → ratify subset; `none` / `n` → skip
+
+**For each ratified decision**, call:
+```
+bicameral.ratify(
+  decision_id = "<id from ingest response>",
+  signer      = "<first speaker in the source, or git user email as fallback>",
+  note        = "",   # optional — leave blank unless user provided context
+)
+```
+
+Confirm the result:
+```
+✓ Ratified 3/3 — drift tracking active on these decisions.
+  (2 skipped — still proposals, will surface as stale after 14 days)
+```
+
+**Never silently skip the ratify step.** If the user says "just ingest, don't ask",
+record that and skip — but make the skip explicit ("Skipped ratification — these are
+proposals; run `bicameral.ratify` when ready to start drift tracking.").
+
+**Signer resolution order:**
+1. First named speaker in the source document's `participants` / `speakers` field
+2. Meeting organizer if named in the transcript
+3. Git user email (`git config user.email`) as final fallback
+
 ## Arguments
 
 $ARGUMENTS — the transcript text, file path, or description of what to ingest
@@ -531,3 +578,5 @@ User: "Ingest our sprint planning notes from today"
 -> Use Grep + Read + validate_symbols to resolve code regions — 5 touch real code, 3 are strategic
 -> Call `bicameral.ingest` with 5 filtered decisions (internal format with explicit code_regions for the 3 grounded ones)
 -> Report: "8 decisions found, 3 dropped (strategic/market), 5 ingested: 3 mapped to code, 2 ungrounded (rate limiting + webhook retry — not yet implemented)"
+-> Show ratify prompt for all 5, default to all, wait for user response
+-> Call `bicameral.ratify` for each confirmed decision

@@ -1,4 +1,4 @@
-"""Session-sync middleware (v0.6.1).
+"""Session-sync middleware (v0.7.0).
 
 Two entry points:
 
@@ -15,15 +15,37 @@ never block a handler.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from contracts import SessionStartBanner
 
 logger = logging.getLogger(__name__)
 
+_STALE_PROPOSAL_DAYS = 14
+
+
+def _is_stale_proposal(decision: dict) -> bool:
+    """Return True if this proposal's signoff.created_at is >14 days old."""
+    if decision.get("status") != "proposal":
+        return False
+    signoff = decision.get("signoff") or {}
+    if not isinstance(signoff, dict):
+        return False
+    created_at_str = signoff.get("created_at", "")
+    if not created_at_str:
+        return False
+    try:
+        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - created_at).days
+        return age_days >= _STALE_PROPOSAL_DAYS
+    except Exception:
+        return False
+
 
 async def get_session_start_banner(ctx) -> SessionStartBanner | None:
-    """Return a drifted-decisions banner on the first MCP call of a session.
+    """Return an open-items banner on the first MCP call of a session.
 
+    Surfaces drifted, ungrounded, and stale proposals (>14 days idle).
     Sets ``_sync_state["session_started"]`` to True on first call so
     subsequent calls within the same server session return None immediately.
     The banner is cached in ``_sync_state["session_banner"]`` so a second
@@ -43,21 +65,35 @@ async def get_session_start_banner(ctx) -> SessionStartBanner | None:
         return sync_state["session_banner"]
 
     try:
-        open_items = await ctx.ledger.get_decisions_by_status(["drifted", "ungrounded"])
+        open_items = await ctx.ledger.get_decisions_by_status(["drifted", "ungrounded", "proposal"])
         if not open_items:
             sync_state["session_banner"] = None
             return None
 
         drifted_count = sum(1 for d in open_items if d.get("status") == "drifted")
         ungrounded_count = sum(1 for d in open_items if d.get("status") == "ungrounded")
+        proposal_count = sum(1 for d in open_items if d.get("status") == "proposal")
+        stale_proposal_count = sum(1 for d in open_items if _is_stale_proposal(d))
+
+        # Only surface proposals in the banner if there are stale ones — normal
+        # proposals are expected noise; stale ones need attention.
+        has_attention_items = bool(drifted_count or ungrounded_count or stale_proposal_count)
+        if not has_attention_items:
+            sync_state["session_banner"] = None
+            return None
 
         max_items = 10
+        # Priority order: drifted first, then stale proposals, then ungrounded
+        def _sort_key(d: dict) -> int:
+            s = d.get("status", "")
+            if s == "drifted":
+                return 0
+            if s == "proposal" and _is_stale_proposal(d):
+                return 1
+            return 2
+
+        sorted_items = sorted(open_items, key=_sort_key)[:max_items]
         truncated = len(open_items) > max_items
-        # Prioritize drifted over ungrounded in the truncated view
-        sorted_items = sorted(
-            open_items,
-            key=lambda d: 0 if d.get("status") == "drifted" else 1,
-        )[:max_items]
 
         items = [
             {
@@ -74,6 +110,8 @@ async def get_session_start_banner(ctx) -> SessionStartBanner | None:
             parts.append(f"{drifted_count} drifted")
         if ungrounded_count:
             parts.append(f"{ungrounded_count} ungrounded")
+        if stale_proposal_count:
+            parts.append(f"{stale_proposal_count} stale proposal(s) need review")
         summary = " + ".join(parts)
         overflow = f" (showing top {max_items})" if truncated else ""
         message = (
@@ -84,6 +122,8 @@ async def get_session_start_banner(ctx) -> SessionStartBanner | None:
         banner = SessionStartBanner(
             drifted_count=drifted_count,
             ungrounded_count=ungrounded_count,
+            proposal_count=proposal_count,
+            stale_proposal_count=stale_proposal_count,
             items=items,
             truncated=truncated,
             message=message,

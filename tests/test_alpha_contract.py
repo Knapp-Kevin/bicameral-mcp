@@ -87,7 +87,7 @@ def _ingest_payload(description: str, *, with_region: bool, signoff: bool) -> di
 
     ``with_region=True``   → mapping pre-pinned to ``impl.py:fetch_user``.
     ``with_region=False``  → ungrounded decision (invariant 2 then binds it).
-    ``signoff=True``       → attaches ``product_signoff`` so
+    ``signoff=True``       → attaches ``signoff`` so
                              ``project_decision_status`` can promote to
                              ``reflected`` once compliance is resolved.
     """
@@ -113,9 +113,11 @@ def _ingest_payload(description: str, *, with_region: bool, signoff: bool) -> di
             "purpose": description,
         }]
     if signoff:
-        mapping["product_signoff"] = {
+        mapping["signoff"] = {
+            "state": "ratified",
             "signer": "alpha@example.com",
             "ratified_at": "2026-04-24T10:00:00Z",
+            "session_id": None,
         }
     return {
         "query": description,
@@ -186,7 +188,7 @@ async def test_ingest_bind_commit_marks_reflected(alpha_env):
 
     Proves invariants 1, 2, 3 together. ``project_decision_status`` only
     returns ``reflected`` when every binding has a ``compliant`` verdict
-    AND ``product_signoff`` is set — which is what a PM-ratified, engineer-
+    AND ``signoff`` is set — which is what a PM-ratified, engineer-
     verified decision looks like in the alpha flow.
     """
     ctx, _ = alpha_env

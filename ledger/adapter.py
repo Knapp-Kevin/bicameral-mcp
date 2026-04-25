@@ -262,7 +262,7 @@ class SurrealDBLedgerAdapter:
         await self._ensure_connected()
         conditions = " OR ".join(f"status = '{s}'" for s in statuses)
         query = (
-            f"SELECT decision_id, description, status, source_ref, meeting_date "
+            f"SELECT decision_id, description, status, source_ref, meeting_date, signoff "
             f"FROM decision WHERE {conditions} LIMIT 50"
         )
         result = await self._client.query(query)
@@ -600,7 +600,7 @@ class SurrealDBLedgerAdapter:
             source_ref = span.get("source_ref", payload.get("query", ""))
             source_type = span.get("source_type", "manual")
             span_text = span.get("text", "")
-            product_signoff = mapping.get("product_signoff", None)
+            signoff = mapping.get("signoff", None)
 
             code_regions = mapping.get("code_regions", [])
             initial_status = "ungrounded" if not code_regions else "pending"
@@ -629,7 +629,7 @@ class SurrealDBLedgerAdapter:
                 status=initial_status,
                 meeting_date=span.get("meeting_date", ""),
                 speakers=span.get("speakers", []),
-                product_signoff=product_signoff,
+                signoff=signoff,
                 feature_group=feature_group,
             )
             decisions_created += 1

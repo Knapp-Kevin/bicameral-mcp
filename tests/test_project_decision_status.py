@@ -195,10 +195,10 @@ async def test_projected_status_reflected_when_current_hash_compliant():
         region = await _seed_region(c, content_hash="h1")
         await _bind(c, decision, region)
         await _seed_verdict(c, decision, region, "h1", "compliant")
-        # product_signoff is None by default → hero case returns 'pending'
-        # unless signoff is set. Set it to confirm reflected.
+        # signoff is None by default → hero case returns 'pending'
+        # unless signoff is ratified. Set it to confirm reflected.
         await c.query(
-            f"UPDATE {decision} SET product_signoff = {{ owner: 'owner@co' }}",
+            f"UPDATE {decision} SET signoff = {{ state: 'ratified', signer: 'owner@co', ratified_at: time::now() }}",
         )
         status = await project_decision_status(c, decision)
         assert status == "reflected"

@@ -1,6 +1,7 @@
 """Tests for sync_middleware — session-start banner and ledger catch-up (v0.6.1)."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,6 +47,18 @@ def _ungrounded(decision_id="decision:2", description="Billing uses Stripe", sou
     }
 
 
+def _proposal(decision_id="decision:3", description="Rate limit is 100 req/s",
+              source_ref="sprint-notes", days_old=15):
+    created_at = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
+    return {
+        "decision_id": decision_id,
+        "description": description,
+        "source_ref": source_ref,
+        "status": "proposal",
+        "signoff": {"state": "proposed", "created_at": created_at},
+    }
+
+
 # ── get_session_start_banner ─────────────────────────────────────────
 
 
@@ -86,7 +99,7 @@ async def test_banner_includes_ungrounded_decisions():
 async def test_banner_queries_both_drifted_and_ungrounded_statuses():
     ctx = _make_ctx(open_rows=[_drifted()])
     await get_session_start_banner(ctx)
-    ctx.ledger.get_decisions_by_status.assert_called_once_with(["drifted", "ungrounded"])
+    ctx.ledger.get_decisions_by_status.assert_called_once_with(["drifted", "ungrounded", "proposal"])
 
 
 @pytest.mark.asyncio
@@ -186,3 +199,26 @@ async def test_ensure_swallows_link_commit_exception():
         mock_lc.side_effect = RuntimeError("git not available")
         # Must not raise
         await ensure_ledger_synced(ctx)
+
+
+# ── stale proposal banner (v0.7.0) ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_banner_surfaces_stale_proposal():
+    """Proposals idle >14 days appear in the banner with stale_proposal_count."""
+    ctx = _make_ctx(open_rows=[_proposal(days_old=15)])
+    banner = await get_session_start_banner(ctx)
+    assert banner is not None
+    assert banner.stale_proposal_count == 1
+    assert banner.proposal_count == 1
+    assert "stale proposal" in banner.message
+    assert any(i["status"] == "proposal" for i in banner.items)
+
+
+@pytest.mark.asyncio
+async def test_banner_silent_on_fresh_proposal():
+    """Proposals <14 days old are expected noise — banner must not fire."""
+    ctx = _make_ctx(open_rows=[_proposal(days_old=3)])
+    banner = await get_session_start_banner(ctx)
+    assert banner is None

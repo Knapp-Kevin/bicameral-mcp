@@ -27,13 +27,14 @@ logger = logging.getLogger(__name__)
 #   - edges: yields(input_span→decision), binds_to(decision→code_region),
 #             locates(symbol→code_region)
 #   - removed: maps_to, implements
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Maps schema version → minimum bicameral-mcp code version that understands it.
 # Used to produce actionable "upgrade your binary" messages.
 SCHEMA_COMPATIBILITY: dict[int, str] = {
     4: "0.5.0",
     5: "0.6.0",
+    6: "0.7.0",
 }
 
 # Migrations that drop or recreate tables/data. These are never auto-applied;
@@ -99,19 +100,19 @@ _TABLES = [
     "DEFINE FIELD meeting_date   ON decision TYPE string DEFAULT ''",
     "DEFINE FIELD speakers       ON decision TYPE array<string> DEFAULT []",
     "DEFINE FIELD status         ON decision TYPE string DEFAULT 'ungrounded' "
-    "ASSERT $value IN ['reflected', 'drifted', 'pending', 'ungrounded']",
+    "ASSERT $value IN ['reflected', 'drifted', 'pending', 'ungrounded', 'proposal']",
     "DEFINE FIELD created_at     ON decision TYPE datetime DEFAULT time::now()",
     # v0.4.13-style content-addressable dedup; same derivation, renamed type
     "DEFINE FIELD canonical_id   ON decision TYPE string DEFAULT ''",
-    # Double-entry axis — product_signoff is stored; eng_reflected is derived
+    # Double-entry axis — signoff is stored; eng_reflected is derived
     # from compliance_check aggregation at read time via project_decision_status.
-    # Shape when set: {signer: str, timestamp: str, source_commit_ref: str, note: str}
-    "DEFINE FIELD product_signoff ON decision FLEXIBLE TYPE option<object> DEFAULT NONE",
+    # Shape: {state: 'proposed'|'ratified', session_id, created_at/ratified_at, signer?, note?}
+    "DEFINE FIELD signoff ON decision FLEXIBLE TYPE option<object> DEFAULT NONE",
     "DEFINE INDEX idx_decision_canonical ON decision FIELDS canonical_id UNIQUE",
     "DEFINE INDEX idx_decision_fts ON decision FIELDS description "
     "SEARCH ANALYZER biz_analyzer BM25(1.2, 0.75) HIGHLIGHTS",
     # Powers the "awaiting signoff" PM dashboard queue
-    "DEFINE INDEX idx_decision_signoff ON decision FIELDS product_signoff",
+    "DEFINE INDEX idx_decision_signoff ON decision FIELDS signoff",
 
     # ── Shared / unchanged ──────────────────────────────────────────────
 
@@ -334,10 +335,86 @@ async def _migrate_v4_to_v5(client: LedgerClient) -> None:
     logger.info("[migration] v4 → v5: yields table clean, unique index applied")
 
 
+async def _migrate_v5_to_v6(client: LedgerClient) -> None:
+    """v5 → v6: Rename product_signoff → signoff + tag historical records.
+
+    Historical migration policy:
+    - product_signoff = {...}  →  signoff = {state:'ratified', signer, ratified_at, session_id:null, note}
+    - product_signoff = None with bindings  →  signoff = {state:'ratified', signer:'legacy-migration', ...}
+    - product_signoff = None without bindings  →  signoff stays None (ungrounded)
+
+    New ingests after v0.7.0 write signoff = {state:'proposed', ...} by default.
+    """
+    from datetime import datetime, timezone
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    try:
+        all_decisions = await client.query(
+            "SELECT id, product_signoff FROM decision"
+        )
+        migrated = 0
+        for row in (all_decisions or []):
+            decision_id = str(row.get("id", ""))
+            old_signoff = row.get("product_signoff")
+
+            if old_signoff and isinstance(old_signoff, dict):
+                # Had explicit product_signoff → tag as ratified
+                new_signoff = {
+                    "state": "ratified",
+                    "signer": old_signoff.get("signer", "unknown"),
+                    "ratified_at": old_signoff.get("timestamp", now_iso),
+                    "session_id": None,
+                    "note": old_signoff.get("note", ""),
+                    "source_commit_ref": old_signoff.get("source_commit_ref", ""),
+                }
+                try:
+                    await client.execute(
+                        f"UPDATE {decision_id} SET signoff = $s",
+                        {"s": new_signoff},
+                    )
+                    migrated += 1
+                except Exception as exc:
+                    logger.warning("[migration] v5→v6: failed to migrate %s: %s", decision_id, exc)
+            elif old_signoff is None:
+                # Check for bindings — implicitly-ratified decisions get legacy-migration tag
+                bindings = await client.query(
+                    f"SELECT count() AS n FROM binds_to WHERE in = {decision_id} LIMIT 1"
+                )
+                has_bindings = bindings and int((bindings[0] or {}).get("n", 0)) > 0
+                if has_bindings:
+                    new_signoff = {
+                        "state": "ratified",
+                        "signer": "legacy-migration",
+                        "ratified_at": now_iso,
+                        "session_id": None,
+                        "note": "",
+                    }
+                    try:
+                        await client.execute(
+                            f"UPDATE {decision_id} SET signoff = $s",
+                            {"s": new_signoff},
+                        )
+                        migrated += 1
+                    except Exception as exc:
+                        logger.warning("[migration] v5→v6: failed to tag %s: %s", decision_id, exc)
+
+        logger.info("[migration] v5 → v6: migrated %d decision signoff records", migrated)
+    except Exception as exc:
+        logger.warning("[migration] v5 → v6: signoff migration failed: %s", exc)
+
+    # Re-apply index under new field name
+    await _execute_define_idempotent(
+        client, "DEFINE INDEX idx_decision_signoff ON decision FIELDS signoff"
+    )
+    logger.info("[migration] v5 → v6: signoff field indexed")
+
+
 # Registry: version → migration function that brings DB from version-1 to version.
 # Pre-v4 migrations are removed; DBs older than v4 must be reset.
 _MIGRATIONS: dict[int, ...] = {
     5: _migrate_v4_to_v5,
+    6: _migrate_v5_to_v6,
 }
 
 

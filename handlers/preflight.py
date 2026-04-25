@@ -231,7 +231,7 @@ async def _region_anchored_preflight(
             related_constraints=[],
             source_excerpt=d.get("source_excerpt", ""),
             meeting_date=d.get("meeting_date", ""),
-            product_signoff=d.get("product_signoff"),
+            signoff=d.get("signoff"),
         ))
 
     return matches

@@ -264,7 +264,7 @@ def _to_brief_decision(m: DecisionMatch) -> BriefDecision:
         drift_evidence=m.drift_evidence,
         source_excerpt=m.source_excerpt,
         meeting_date=m.meeting_date,
-        product_signoff=m.product_signoff,
+        signoff=m.signoff,
     )
 
 

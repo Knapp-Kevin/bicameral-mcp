@@ -206,7 +206,7 @@ async def _fetch_all_decisions_enriched(ledger) -> list[dict]:
                 meeting_date,
                 speakers,
                 status,
-                product_signoff,
+                signoff,
                 created_at,
                 ->binds_to->code_region.{
                     file_path,

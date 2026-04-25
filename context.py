@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Generated once per server process — all tool calls in the same session share it.
+_SESSION_ID: str = str(uuid.uuid4())
 
 
 _GUIDED_MODE_TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -67,6 +71,9 @@ class BicameralContext:
     # setting lives in ``.bicameral/config.yaml`` (chosen at setup time);
     # env var ``BICAMERAL_GUIDED_MODE`` is a one-off override.
     guided_mode: bool = False
+    # v0.7.0: server-session UUID — same for all tool calls in one server process.
+    # Used to tag proposed/ratified signoff objects with their originating session.
+    session_id: str = field(default_factory=lambda: _SESSION_ID)
     # v0.4.8: mutable cache for within-call sync dedup. Frozen-dataclass-safe
     # because the reference stays pinned; only the dict's contents mutate.
     # Keys: ``last_sync_sha`` (str). Cleared by any handler that mutates

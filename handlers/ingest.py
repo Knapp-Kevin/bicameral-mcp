@@ -56,8 +56,8 @@ def _normalize_payload(payload: dict) -> dict:
             "symbols": [],
             "code_regions": [],
         }
-        if d.product_signoff is not None:
-            mapping["product_signoff"] = d.product_signoff
+        if d.signoff is not None:
+            mapping["signoff"] = d.signoff
         if d.feature_group is not None:
             mapping["feature_group"] = d.feature_group
         mappings.append(mapping)
@@ -190,7 +190,7 @@ async def _find_overlap_candidates(
             decision_id=row.get("decision_id") or row.get("id") or "",
             description=row.get("description") or "",
             overlap_score=float(row.get("score") or row.get("confidence") or 0.0),
-            product_signoff=row.get("product_signoff"),
+            signoff=row.get("signoff"),
             projected_status=row.get("status") or "ungrounded",
         ))
         if len(candidates) >= top_k:
@@ -249,7 +249,17 @@ async def handle_ingest(
     # No auto-grounding: mappings are passed through as-is.
     # Caller-LLM binding flow: the caller uses bicameral.bind after ingest
     # to supply code regions for ungrounded decisions.
+    #
+    # v0.7.0: every new ingest enters as 'proposed' by default.
+    # Caller may override by supplying signoff in the mapping; if so, pass through.
+    from datetime import datetime, timezone
+    _now_iso = datetime.now(timezone.utc).isoformat()
+    _session_id = getattr(ctx, "session_id", None) or ""
+    _proposed_signoff = {"state": "proposed", "session_id": _session_id, "created_at": _now_iso}
     mappings = payload.get("mappings") or []
+    for m in mappings:
+        if m.get("signoff") is None:
+            m["signoff"] = _proposed_signoff
     payload = {**payload, "mappings": mappings}
 
     # Pollution guard (v0.4.6, Bug 3): warn the user if they're ingesting

@@ -7,7 +7,7 @@ v0.5.0 changes:
   - intent_id → decision_id everywhere (clean break, no aliases)
   - ComplianceVerdict.compliant:bool → verdict:Literal["compliant","drifted","not_relevant"]
   - PendingComplianceCheck.decision_id (was intent_id)
-  - IngestDecision gains product_signoff field
+  - IngestDecision gains signoff field
   - New: RatifyResponse, SupersessionCandidate
   - ResolveComplianceRejection reason "unknown_intent_id" → "unknown_decision_id"
 """
@@ -32,6 +32,8 @@ class SessionStartBanner(BaseModel):
     """
     drifted_count: int
     ungrounded_count: int = 0
+    proposal_count: int = 0      # proposals awaiting ratification
+    stale_proposal_count: int = 0  # proposals idle >14 days
     items: list[dict]   # [{decision_id, description, source_ref, status}]
     truncated: bool = False     # True when count of open items exceeds the item list
     message: str
@@ -62,7 +64,7 @@ class SourceCursorSummary(BaseModel):
 class DecisionStatusEntry(BaseModel):
     decision_id: str
     description: str
-    status: Literal["reflected", "drifted", "pending", "ungrounded"]
+    status: Literal["reflected", "drifted", "pending", "ungrounded", "proposal"]
     source_type: str                  # transcript | notion | document | manual | implementation_choice
     source_ref: str                   # meeting ID, Notion page ID, etc.
     ingested_at: str                  # ISO datetime
@@ -72,7 +74,7 @@ class DecisionStatusEntry(BaseModel):
     source_excerpt: str = ""
     meeting_date: str = ""
     speakers: list[str] = []
-    product_signoff: dict | None = None
+    signoff: dict | None = None
 
 
 class DecisionStatusResponse(BaseModel):
@@ -88,7 +90,7 @@ class DecisionStatusResponse(BaseModel):
 class DecisionMatch(BaseModel):
     decision_id: str
     description: str                  # the original decision text
-    status: Literal["reflected", "drifted", "pending", "ungrounded"]
+    status: Literal["reflected", "drifted", "pending", "ungrounded", "proposal"]
     confidence: float                 # BM25 match score (0–1)
     source_ref: str
     code_regions: list[CodeRegionSummary]
@@ -96,7 +98,7 @@ class DecisionMatch(BaseModel):
     related_constraints: list[str] = []
     source_excerpt: str = ""
     meeting_date: str = ""
-    product_signoff: dict | None = None
+    signoff: dict | None = None
 
 
 class ComplianceVerdict(BaseModel):
@@ -215,7 +217,7 @@ class SearchDecisionsResponse(BaseModel):
 class DriftEntry(BaseModel):
     decision_id: str
     description: str
-    status: Literal["reflected", "drifted", "pending", "ungrounded"]
+    status: Literal["reflected", "drifted", "pending", "ungrounded", "proposal"]
     symbol: str
     lines: tuple[int, int]
     drift_evidence: str = ""
@@ -253,6 +255,7 @@ class ScanBranchResponse(BaseModel):
     pending_count: int = 0
     ungrounded_count: int = 0
     reflected_count: int = 0
+    proposal_count: int = 0
     undocumented_symbols: list[str] = []
     action_hints: list[ActionHint] = []
 
@@ -266,6 +269,8 @@ class DoctorLedgerSummary(BaseModel):
     pending: int = 0
     ungrounded: int = 0
     reflected: int = 0
+    proposal: int = 0
+    stale_proposal: int = 0
 
 
 class DoctorResponse(BaseModel):
@@ -304,14 +309,14 @@ class IngestMapping(BaseModel):
     span: IngestSpan = IngestSpan()
     symbols: list[str] = []
     code_regions: list[IngestCodeRegion] = []
-    product_signoff: dict | None = None
+    signoff: dict | None = None
     feature_group: str | None = None
 
 
 class IngestDecision(BaseModel):
     """One decision in the natural LLM-generated format.
 
-    v0.5.0: adds product_signoff. For ingest-time payloads (transcript,
+    v0.5.0: adds signoff. For ingest-time payloads (transcript,
     notion, document, slack) the caller typically sets this at ingest time
     (PM was in the room). For implementation_choice payloads it must be
     None — the handler rejects a non-None signoff on impl-time entries.
@@ -327,7 +332,7 @@ class IngestDecision(BaseModel):
     status: str = ""
     participants: list[str] = []
     source_excerpt: str = ""
-    product_signoff: dict | None = None
+    signoff: dict | None = None
     feature_group: str | None = None
 
 
@@ -387,7 +392,7 @@ class IngestResponse(BaseModel):
 class BriefDecision(BaseModel):
     decision_id: str
     description: str
-    status: Literal["reflected", "drifted", "pending", "ungrounded"]
+    status: Literal["reflected", "drifted", "pending", "ungrounded", "proposal"]
     source_type: str = ""
     source_ref: str = ""
     code_regions: list[CodeRegionSummary] = []
@@ -395,7 +400,7 @@ class BriefDecision(BaseModel):
     drift_evidence: str = ""
     source_excerpt: str = ""
     meeting_date: str = ""
-    product_signoff: dict | None = None
+    signoff: dict | None = None
 
 
 class BriefGap(BaseModel):
@@ -505,7 +510,7 @@ class GapRubric(BaseModel):
 class GapJudgmentContextDecision(BaseModel):
     decision_id: str
     description: str
-    status: Literal["reflected", "drifted", "pending", "ungrounded"]
+    status: Literal["reflected", "drifted", "pending", "ungrounded", "proposal"]
     source_excerpt: str = ""
     source_ref: str = ""
     meeting_date: str = ""
@@ -532,8 +537,8 @@ class RatifyResponse(BaseModel):
     """
     decision_id: str
     was_new: bool         # True if this call set the signoff; False if already set
-    product_signoff: dict
-    projected_status: Literal["reflected", "drifted", "pending", "ungrounded"]
+    signoff: dict
+    projected_status: Literal["reflected", "drifted", "pending", "ungrounded", "proposal"]
 
 
 # ── Stop-and-ask v1: SupersessionCandidate (enriched for v0.5.0) ─────
@@ -542,15 +547,15 @@ class RatifyResponse(BaseModel):
 class SupersessionCandidate(BaseModel):
     """BM25 overlap candidate surfaced during ingest to detect supersession.
 
-    v0.5.0: re-keyed on decision_id; enriched with product_signoff and
+    v0.5.0: re-keyed on decision_id; enriched with signoff and
     projected_status so the caller-LLM classifier can reason about
     supersession with full double-entry context.
     """
     decision_id: str
     description: str
     overlap_score: float
-    product_signoff: dict | None = None
-    projected_status: Literal["reflected", "drifted", "pending", "ungrounded"] = "ungrounded"
+    signoff: dict | None = None
+    projected_status: Literal["reflected", "drifted", "pending", "ungrounded", "proposal"] = "ungrounded"
 
 
 # ── Tool: bicameral.history ──────────────────────────────────────────────────

@@ -419,7 +419,7 @@ async def list_tools() -> list[Tool]:
             name="bicameral.ratify",
             description=(
                 "Product sign-off for a decision (v0.5.0+). One-shot, idempotent. "
-                "Sets product_signoff on the decision record — the second entry in the "
+                "Sets signoff on the decision record — the second entry in the "
                 "double-entry ledger (first: code grounding via compliance_check; "
                 "second: product owner sign-off via ratify). A decision is only "
                 "'reflected' when both entries are present and all bound regions are "

@@ -59,7 +59,7 @@ def _make_region_decision(
         "meeting_date": "",
         "ingested_at": "2026-04-21",
         "status": status,
-        "product_signoff": None,
+        "signoff": None,
         "code_region": {
             "file_path": file_path,
             "symbol": symbol,

@@ -20,6 +20,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "phase1: requires RealCodeLocatorAdapter")
     config.addinivalue_line("markers", "phase2: requires SurrealDBLedgerAdapter + SurrealDB")
     config.addinivalue_line("markers", "phase3: full E2E — requires both Phase 1 + Phase 2")
+    config.addinivalue_line("markers", "alpha_flow: Jacob North Star regression suite — v0.7 gate")
 
 
 @pytest.fixture(autouse=True)

@@ -3,6 +3,36 @@
 All notable changes to bicameral-mcp are tracked here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.0 — 2026-04-24 — Accountable North Star: proposal state + signoff schema
+
+Every decision now has provenance: who proposed it, who ratified it, in which session.
+
+### Changed
+
+- **`product_signoff` → `signoff`** — field rename across the full stack (schema,
+  queries, contracts, handlers). New tagged shape: `{state:'proposed'|'ratified', ...}`.
+- **Default-to-proposed**: `bicameral_ingest` writes
+  `signoff = {state:'proposed', session_id, created_at}` by default.
+  Proposed decisions are **drift-exempt** — they never enter `drifted` or `reflected`
+  until explicitly ratified.
+- **`bicameral_ratify`** now promotes `proposed → ratified`, capturing `signer`,
+  `session_id`, `ratified_at`, and optional `note`.
+- **Schema v5 → v6**: migration copies historical `product_signoff` → `signoff`
+  with `{state:'ratified'}` for records with bindings; new ingests default to `proposed`.
+- **Session-start banner** extended: surfaces stale proposals (>14 days) alongside
+  drifted decisions. `SessionStartBanner` gains `proposal_count` and
+  `stale_proposal_count`.
+- **New status `'proposal'`** added to the `status` ASSERT constraint and all
+  `Literal[...]` annotations in contracts.
+- **`context.BicameralContext`** gains `session_id` (UUID generated once per
+  server process) for audit trails on signoff objects.
+- **Jacob regression suite** (`tests/test_alpha_flow.py`) — 5 invariants + v0.7
+  proposal test gate the Wednesday ship.
+
+### Gating note
+The drift-exemption for proposals is gated on a drift precision eval harness
+(≥90% precision on `drifted` verdicts). See `thoughts/shared/plans/2026-04-24-beta-north-star-wednesday.md`.
+
 ## 0.6.4 — 2026-04-23 — nuke `search_code`, caller-LLM owns all code retrieval
 
 **Architecture shift**: the MCP server no longer performs any code search.
@@ -1338,7 +1368,7 @@ the agent to ask.
   This is load-bearing for Phase 2: without the fix, the
   `review_drift` hint generator couldn't fire because no match ever
   looked drifted to it. Surfaced during the Accountable drift demo
-  walkthrough (see `thoughts/shared/plans/2026-04-14-accountable-drift-demo.md`).
+  walkthrough (see `thoughts/shared/plans/2026-04-14-beta-drift-demo.md`).
 
 ### Migration
 

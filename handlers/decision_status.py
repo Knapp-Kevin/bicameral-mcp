@@ -62,7 +62,7 @@ async def handle_decision_status(
             source_excerpt=d.get("source_excerpt", ""),
             meeting_date=d.get("meeting_date", ""),
             speakers=d.get("speakers", []),
-            product_signoff=d.get("product_signoff"),
+            signoff=d.get("signoff"),
         ))
 
     return DecisionStatusResponse(

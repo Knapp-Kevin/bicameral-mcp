@@ -440,6 +440,13 @@ async def test_e2e_pending_to_reflected_via_resolve(_repo_ctx):
                     "start_line": 1,
                     "end_line": 4,
                 }],
+                # Ratified signoff required for drift detection to run (v0.7+)
+                "signoff": {
+                    "state": "ratified",
+                    "signer": "test@example.com",
+                    "ratified_at": "2026-04-24T10:00:00Z",
+                    "session_id": None,
+                },
             }
         ],
     }
@@ -473,10 +480,10 @@ async def test_e2e_pending_to_reflected_via_resolve(_repo_ctx):
     resp = await handle_resolve_compliance(_ctx(), phase=p.phase, verdicts=[verdict])
     assert len(resp.accepted) == 1
 
-    # Status now projects as REFLECTED (compliant + product_signoff via auto-ratify).
+    # Status now projects as REFLECTED (compliant + signoff via auto-ratify).
     post = await handle_decision_status(_ctx(), filter="all")
-    # After resolve_compliance, projected status is "pending" (needs product_signoff too)
-    # or "reflected" depending on whether product_signoff is set. The important thing is
+    # After resolve_compliance, projected status is "pending" (needs signoff too)
+    # or "reflected" depending on whether signoff is set. The important thing is
     # that it's no longer "pending" due to unverified regions.
     assert post.summary.get("drifted", 0) == 0, (
         f"Compliant verdict should not yield DRIFTED, got {post.summary!r}"
@@ -512,6 +519,13 @@ async def test_e2e_noncompliant_verdict_yields_drifted(_repo_ctx):
                     "start_line": 1,
                     "end_line": 4,
                 }],
+                # Ratified signoff required for drift detection to run (v0.7+)
+                "signoff": {
+                    "state": "ratified",
+                    "signer": "test@example.com",
+                    "ratified_at": "2026-04-24T10:00:00Z",
+                    "session_id": None,
+                },
             }
         ],
     }

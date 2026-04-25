@@ -60,7 +60,7 @@ async def handle_search_decisions(
             related_constraints=m.get("related_constraints", []),
             source_excerpt=m.get("source_excerpt", ""),
             meeting_date=m.get("meeting_date", ""),
-            product_signoff=m.get("product_signoff"),
+            signoff=m.get("signoff"),
         ))
 
     ungrounded_count = sum(1 for m in matches if m.status == "ungrounded")

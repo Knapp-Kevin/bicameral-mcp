@@ -35,12 +35,11 @@ async def _fresh_client() -> LedgerClient:
 @pytest.mark.asyncio
 async def test_schema_version_is_current_after_migrate():
     """Migrations bring schema_meta to the current SCHEMA_VERSION."""
-    assert SCHEMA_VERSION == 5, "code-level constant must be 5"
     c = await _fresh_client()
     try:
         rows = await c.query("SELECT version FROM schema_meta LIMIT 1")
         assert rows, "schema_meta row missing after migrate"
-        assert rows[0]["version"] == 5
+        assert rows[0]["version"] == SCHEMA_VERSION
     finally:
         await c.close()
 
@@ -264,10 +263,10 @@ async def test_migrate_is_idempotent():
     """Calling migrate() twice is a no-op (version already at target)."""
     c = await _fresh_client()
     try:
-        # Already at v5 from _fresh_client(); running migrate() again is fine.
+        # Already at current version from _fresh_client(); running migrate() again is fine.
         await migrate(c, allow_destructive=True)
         rows = await c.query("SELECT version FROM schema_meta LIMIT 1")
-        assert rows[0]["version"] == 5
+        assert rows[0]["version"] == SCHEMA_VERSION
     finally:
         await c.close()
 

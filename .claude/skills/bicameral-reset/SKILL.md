@@ -61,8 +61,8 @@ If `wiped=false` and there's a `replay_errors` entry, the wipe failed before per
 wiped: false
 cursors_before: 12
 replay_plan: [
-  {source_type: slack, source_scope: accountable-tech, last_source_ref: 1776113809.330439},
-  {source_type: slack, source_scope: accountable-strategy, last_source_ref: 1776107915.567609},
+  {source_type: slack, source_scope: beta-tech, last_source_ref: 1776113809.330439},
+  {source_type: slack, source_scope: beta-strategy, last_source_ref: 1776107915.567609},
   {source_type: notion, source_scope: default, last_source_ref: prd-calendar-v2},
   ... (9 more)
 ]
@@ -83,7 +83,7 @@ replay_plan: [... same as before ...]
 next_action: Ledger wiped for repo ... Re-run the original bicameral_ingest calls for each entry in replay_plan to repopulate.
 ```
 
-**Claude to user:** *"Wiped. Here's the replay plan — we have 12 sources to re-ingest. Want to start with the most recent Slack channel (accountable-tech), or do you have a different priority?"*
+**Claude to user:** *"Wiped. Here's the replay plan — we have 12 sources to re-ingest. Want to start with the most recent Slack channel (beta-tech), or do you have a different priority?"*
 
 ## Safety rules
 

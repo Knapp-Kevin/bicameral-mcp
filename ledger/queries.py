@@ -171,7 +171,7 @@ async def get_all_decisions(
             meeting_date,
             speakers,
             status,
-            product_signoff,
+            signoff,
             created_at,
             ->binds_to->code_region.{{
                 file_path,
@@ -230,7 +230,7 @@ async def search_by_bm25(
             source_type,
             source_ref,
             status,
-            product_signoff,
+            signoff,
             created_at,
             ->binds_to->code_region.{
                 file_path,
@@ -354,7 +354,7 @@ async def get_decisions_for_file(
                 source_type,
                 source_ref,
                 status,
-                product_signoff,
+                signoff,
                 created_at
             } AS decisions
         FROM code_region
@@ -392,7 +392,7 @@ async def get_decisions_for_file(
                 "speaker": "",
                 "ingested_at": str(decision.get("created_at", "")),
                 "status": decision.get("status", "ungrounded"),
-                "product_signoff": decision.get("product_signoff"),
+                "signoff": decision.get("signoff"),
                 "code_region": region,
             })
 
@@ -463,7 +463,7 @@ async def get_decisions_for_files(
                 source_type,
                 source_ref,
                 status,
-                product_signoff,
+                signoff,
                 created_at
             } AS decisions
         FROM code_region
@@ -500,7 +500,7 @@ async def get_decisions_for_files(
                 "meeting_date": "",
                 "ingested_at": str(decision.get("created_at", "")),
                 "status": decision.get("status", "ungrounded"),
-                "product_signoff": decision.get("product_signoff"),
+                "signoff": decision.get("signoff"),
                 "code_region": region,
             })
 
@@ -573,7 +573,7 @@ async def upsert_decision(
     meeting_date: str = "",
     speakers: list = (),
     status: str = "ungrounded",
-    product_signoff: dict | None = None,
+    signoff: dict | None = None,
 ) -> str:
     """Create or update a decision node. Returns the decision ID string.
 
@@ -601,9 +601,9 @@ async def upsert_decision(
             "rationale = $rationale, feature_hint = $feature_hint, "
             "meeting_date = $meeting_date, speakers = $speakers, status = $status"
         )
-        if product_signoff is not None:
-            set_clause += ", product_signoff = $product_signoff"
-            update_params["product_signoff"] = product_signoff
+        if signoff is not None:
+            set_clause += ", signoff = $signoff"
+            update_params["signoff"] = signoff
         if feature_group is not None:
             set_clause += ", feature_group = $feature_group"
             update_params["feature_group"] = feature_group
@@ -631,9 +631,9 @@ async def upsert_decision(
         "feature_hint=$feature_hint, meeting_date=$meeting_date, "
         "speakers=$speakers"
     )
-    if product_signoff is not None:
-        create_clause += ", product_signoff=$product_signoff"
-        create_params["product_signoff"] = product_signoff
+    if signoff is not None:
+        create_clause += ", signoff=$signoff"
+        create_params["signoff"] = signoff
     if feature_group is not None:
         create_clause += ", feature_group=$feature_group"
         create_params["feature_group"] = feature_group
@@ -978,27 +978,37 @@ async def project_decision_status(
     client: LedgerClient,
     decision_id: str,
 ) -> str:
-    """Derive decision.status from product_signoff + compliance verdict aggregation.
+    """Derive decision.status from signoff + compliance verdict aggregation.
 
     Double-entry 2×2 + strict aggregation:
-    - No binds_to AND product_signoff None → 'ungrounded'
-    - No binds_to AND product_signoff set → 'pending'
+    - signoff.state == 'proposed' → 'proposal' (drift-exempt, awaiting ratification)
+    - No binds_to AND signoff None → 'ungrounded'
+    - No binds_to AND signoff ratified → 'pending'
     - Any bound region with drifted verdict → 'drifted'
     - Any bound region with no verdict for current hash, prior compliant
       verdict existed → 'drifted' (was verified, code has since changed)
     - Any bound region with no verdict for current hash, no prior verdict
       → 'pending' (first-time bind, awaiting initial verification)
-    - All bound regions compliant + product_signoff set → 'reflected'
-    - All bound regions compliant + product_signoff None → 'pending' (hero case)
+    - All bound regions compliant + signoff ratified → 'reflected'
+    - All bound regions compliant + signoff None → 'pending' (hero case)
 
     DRIFTED always wins over signoff state — broken code is broken code.
+    Proposed decisions are drift-exempt: they never enter drifted/reflected
+    until ratified.
     """
     dec_rows = await client.query(
-        f"SELECT product_signoff FROM {decision_id} LIMIT 1",
+        f"SELECT signoff FROM {decision_id} LIMIT 1",
     )
     if not dec_rows:
         return "ungrounded"
-    product_signoff = dec_rows[0].get("product_signoff")
+    signoff = dec_rows[0].get("signoff")
+
+    # Short-circuit: proposed decisions are drift-exempt
+    if signoff and isinstance(signoff, dict) and signoff.get("state") == "proposed":
+        return "proposal"
+
+    # For ratified decisions, use the same bool check as before
+    is_ratified = bool(signoff)
 
     # Get all non-pruned bound regions + their current content_hash
     binding_rows = await client.query(
@@ -1010,7 +1020,7 @@ async def project_decision_status(
     )
 
     if not binding_rows:
-        return "pending" if product_signoff else "ungrounded"
+        return "pending" if is_ratified else "ungrounded"
 
     all_compliant = True
     any_drifted = False
@@ -1047,7 +1057,7 @@ async def project_decision_status(
     if any_pending:
         return "pending"
     if all_compliant:
-        return "reflected" if product_signoff else "pending"
+        return "reflected" if is_ratified else "pending"
     return "pending"
 
 
