@@ -106,6 +106,12 @@ The handler runs `bicameral.search` internally, gates on the user's
 `guided_mode` setting, conditionally chains to `bicameral.brief`, and
 returns a `PreflightResponse` with a `fired: bool` field.
 
+The response also carries an optional `sync_metrics`
+(`{sync_catchup_ms, barrier_held_ms}`) observability field for the
+catch-up time spent in `ensure_ledger_synced`. **Skip rendering it** —
+these are server-side latency numbers, not user-visible signal. Log
+them if you're profiling, otherwise ignore.
+
 ### 2.5 Render session-start banner if present
 
 Before evaluating `response.fired`, check `response.session_start_banner`.

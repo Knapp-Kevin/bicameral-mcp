@@ -29,6 +29,8 @@ Pre-flight check before coding — surface past decisions relevant to what you'r
 
 $ARGUMENTS — the feature, task, or area to search for prior decisions about
 
+The response also carries an optional `sync_metrics` (`{sync_catchup_ms, barrier_held_ms}`) observability field for the catch-up time spent in the implicit `link_commit` that runs before search. **Skip rendering it** — these are server-side latency numbers, not user-visible signal. Log them if you're profiling, otherwise ignore.
+
 ## Action Hint Contract (v0.4.10+)
 
 The response always includes an `action_hints` list. Two intensities,
