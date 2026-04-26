@@ -420,15 +420,12 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="bicameral.ratify",
             description=(
-                "Product sign-off for a decision (v0.5.0+). One-shot, idempotent. "
-                "Sets signoff on the decision record — the second entry in the "
-                "double-entry ledger (first: code grounding via compliance_check; "
-                "second: product owner sign-off via ratify). A decision is only "
-                "'reflected' when both entries are present and all bound regions are "
-                "compliant. Calling ratify on an already-ratified decision is a no-op "
-                "(returns was_new=false) — there is no unratify. The signer field "
-                "identifies the human or agent setting the sign-off; the optional note "
-                "captures the rationale for audit. "
+                "Product sign-off for a decision (v0.7.1+). One-shot, idempotent. "
+                "action='ratify' (default): promotes proposed → ratified; drift tracking activates. "
+                "action='reject': records an explicit rejection — the decision stays in the ledger "
+                "as a negative signal; agents consult it to avoid implementing what the team rejected. "
+                "Both actions are idempotent (was_new=false if already in that state). "
+                "The signer field identifies the human or agent; the optional note captures the rationale. "
                 "Slash alias: /bicameral:ratify"
             ),
             inputSchema={
@@ -436,11 +433,17 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "decision_id": {
                         "type": "string",
-                        "description": "The decision to ratify (UUIDv5 decision ID from the ledger)",
+                        "description": "The decision to ratify or reject (UUIDv5 decision ID from the ledger)",
                     },
                     "signer": {
                         "type": "string",
                         "description": "Identity of the product owner or agent setting the sign-off",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["ratify", "reject"],
+                        "default": "ratify",
+                        "description": "'ratify' to approve (drift tracking activates); 'reject' to record explicit rejection (steers agents away)",
                     },
                     "note": {
                         "type": "string",
@@ -683,6 +686,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 decision_id=arguments["decision_id"],
                 signer=arguments["signer"],
                 note=arguments.get("note", ""),
+                action=arguments.get("action", "ratify"),
             )
         elif name in ("bicameral.resolve_collision", "resolve_collision"):
             result = await handle_resolve_collision(

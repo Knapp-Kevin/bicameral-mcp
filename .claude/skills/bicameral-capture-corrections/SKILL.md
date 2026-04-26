@@ -156,12 +156,23 @@ Bicameral found N uningested decision(s). Showing 5:
 Ingest all 5? [Y/n or pick: 1 3 5]  ›
 ```
 
-**8. For each confirmed decision, call:**
+**8. Before calling ingest, invoke the context sentry for naming context:**
+
+```
+Skill("bicameral-context-sentry", args="<1-line paraphrase of correction as topic>")
+```
+
+Use the sentry's naming guidance (existing feature group, business driver
+context) to write the decision description in PM-legible terms that match
+the ledger's existing vocabulary.
+
+**9. Call ingest for each confirmed decision:**
 ```
 bicameral.ingest(
   source="conversation",
   decisions=[{
-    "description": "<correction stated as a decision>",
+    "description": "<correction stated as a decision, using sentry naming guidance>",
+    "feature_group": "<sentry-recommended group or derived from correction topic>",
     "source_ref": "session-correction-<YYYY-MM-DD>",
   }]
 )
@@ -171,7 +182,7 @@ Do **not** run the ratify prompt here. Ratification is surfaced by
 all unratified proposals together is a better experience than a ratify
 gate at the end of every session.
 
-**9. Confirm:**
+**10. Confirm:**
 ```
 ✓ Ingested N/N corrections — proposals pending ratification.
   (M skipped)

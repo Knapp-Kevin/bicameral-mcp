@@ -144,6 +144,23 @@ body {
 .dec.s-superseded::before { background: var(--border); }
 .dec.s-superseded .d-text { text-decoration: line-through; opacity: 0.55; }
 .dec.s-superseded .d-ratified-col { opacity: 0.55; }
+
+/* rejected — dashed line across the row, muted, no code tracking */
+.dec.is-rejected {
+  position: relative;
+}
+.dec.is-rejected::after {
+  content: '';
+  position: absolute;
+  left: 12px; right: 12px;
+  top: 50%;
+  border-top: 1px dashed var(--border-dark);
+  pointer-events: none;
+  z-index: 1;
+}
+.dec.is-rejected .d-text { opacity: 0.45; }
+.dec.is-rejected .d-ratified-col { opacity: 0.55; }
+.dec.is-rejected .d-state-col { opacity: 0.45; }
 .dec:hover  { background: rgba(27,54,93,0.025); }
 .dec.open   { background: rgba(27,54,93,0.03); }
 
@@ -207,6 +224,11 @@ body {
   background: var(--purple-soft);
   border: 1px solid var(--purple);
   color: var(--purple);
+}
+.rp-rejected {
+  background: rgba(180,30,30,0.06);
+  border: 1px dashed rgba(180,30,30,0.5);
+  color: rgba(180,30,30,0.75);
 }
 
 /* ── FULFILLMENT PILL ──────────────────────────────────────── */
@@ -312,6 +334,10 @@ body {
     <input type="checkbox" id="show-superseded" onchange="applyToggle()">
     show superseded
   </label>
+  <label class="topbar-toggle">
+    <input type="checkbox" id="show-rejected" onchange="applyToggle()">
+    show rejected
+  </label>
   <span id="tref" class="topbar-ref"></span>
 </header>
 
@@ -345,9 +371,16 @@ function isProposed(d) {
   return st === 'proposed' || st === 'collision_pending';
 }
 
-// ── sort decisions: ratified desc, proposed at bottom ────────
+function isRejected(d) {
+  return signoffState(d) === 'rejected';
+}
+
+// ── sort decisions: ratified desc, proposed at bottom, rejected last ─
 function sortDecisions(decisions) {
   return [...decisions].sort((a, b) => {
+    const ar = isRejected(a), br = isRejected(b);
+    if (ar && !br) return 1;
+    if (!ar && br) return -1;
     const ap = isProposed(a), bp = isProposed(b);
     if (ap && !bp) return 1;
     if (!ap && bp) return -1;
@@ -368,6 +401,13 @@ function renderRatPill(d) {
   if (st === 'context_pending') {
     const q = d.signoff?.context_question || 'Business driver unclear';
     return `<span class="rat-pill rp-context" data-tip="Needs context: ${esc(q)}">⚑ needs context</span>`;
+  }
+  if (isRejected(d)) {
+    const rejDate = fmtDate(d.signoff?.rejected_at || '');
+    const signer = d.signoff?.signer ? `Rejected by: ${d.signoff.signer}` : 'Rejected';
+    const note = d.signoff?.note ? ` · ${d.signoff.note}` : '';
+    const tip = [signer, rejDate].filter(Boolean).join(' · ') + note;
+    return `<span class="rat-pill rp-rejected" data-tip="${esc(tip)}">✕ rejected</span>`;
   }
   if (isProposed(d)) {
     return `<span class="rat-pill rp-proposed">○ proposed</span>`;
@@ -459,8 +499,9 @@ function renderDec(d, idx) {
   const stCls = `s-${d.status || 'ungrounded'}`;
   const proposed = isProposed(d);
   const superseded = d.status === 'superseded';
+  const rejected = isRejected(d);
   return `
-<div class="dec ${stCls}${proposed ? ' is-proposed' : ''}${superseded ? ' is-superseded' : ''}" id="d${idx}" onclick="toggleDec(this)">
+<div class="dec ${stCls}${proposed ? ' is-proposed' : ''}${superseded ? ' is-superseded' : ''}${rejected ? ' is-rejected' : ''}" id="d${idx}" onclick="toggleDec(this)">
   <div class="dec-hdr">
     <div class="d-ratified-col">${renderRatPill(d)}</div>
     <div class="d-text-col">
@@ -541,15 +582,19 @@ function render(data) {
   applyToggle();
 }
 
-// ── proposed toggle ───────────────────────────────────────────
+// ── toggles ───────────────────────────────────────────────────
 function applyToggle() {
   const showProposed   = document.getElementById('show-proposed').checked;
   const showSuperseded = document.getElementById('show-superseded').checked;
+  const showRejected   = document.getElementById('show-rejected').checked;
   document.querySelectorAll('.dec.is-proposed').forEach(el => {
     el.style.display = showProposed ? '' : 'none';
   });
   document.querySelectorAll('.dec.is-superseded').forEach(el => {
     el.style.display = showSuperseded ? '' : 'none';
+  });
+  document.querySelectorAll('.dec.is-rejected').forEach(el => {
+    el.style.display = showRejected ? '' : 'none';
   });
 }
 
