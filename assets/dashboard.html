@@ -506,22 +506,30 @@ function renderFeature(f, fi) {
 }
 
 // ── render ────────────────────────────────────────────────────
-let _lastData = null;
+let _lastFeaturesJson = null;
 
 function render(data) {
-  _lastData = data;
   const features = data.features || [];
   document.getElementById('tref').textContent =
     data.as_of ? `@ ${String(data.as_of).slice(0, 9)}` : '';
 
   if (!features.length) {
-    document.getElementById('root').innerHTML = `
+    const emptyHtml = `
 <div class="empty">
   No decisions tracked yet.<br>
   Run <code>bicameral.ingest</code> to populate the ledger.
 </div>`;
+    if (document.getElementById('root').innerHTML !== emptyHtml) {
+      document.getElementById('root').innerHTML = emptyHtml;
+    }
+    _lastFeaturesJson = null;
     return;
   }
+
+  // Skip re-render when content is identical — preserves expanded sections.
+  const newJson = JSON.stringify(features);
+  if (newJson === _lastFeaturesJson) return;
+  _lastFeaturesJson = newJson;
 
   const truncNote = data.truncated
     ? `<div class="truncation-note">Showing 50 of ${data.total_features} features — use <code>feature_filter</code> in bicameral.history to drill in.</div>`
@@ -559,17 +567,27 @@ function toggleDec(el) {
 
 // ── live connection ────────────────────────────────────────────
 const pill = document.getElementById('spill');
+let _reconnectCount = 0;
 
 function connect() {
-  pill.className = 'topbar-pill connecting';
-  pill.textContent = 'connecting…';
   const es = new EventSource('/events');
-  es.onopen    = () => { pill.className = 'topbar-pill live'; pill.textContent = '● live'; };
+  es.onopen = () => {
+    _reconnectCount = 0;
+    pill.className = 'topbar-pill live';
+    pill.textContent = '● live';
+  };
   es.onmessage = e => { try { render(JSON.parse(e.data)); } catch {} };
-  es.onerror   = () => {
-    pill.className = 'topbar-pill disconnected';
-    pill.textContent = '✕ disconnected';
+  es.onerror = () => {
     es.close();
+    _reconnectCount++;
+    // Show "reconnecting" for ~30s (8 attempts × 4s) before declaring disconnected.
+    if (_reconnectCount <= 8) {
+      pill.className = 'topbar-pill connecting';
+      pill.textContent = 'reconnecting…';
+    } else {
+      pill.className = 'topbar-pill disconnected';
+      pill.textContent = '✕ disconnected';
+    }
     setTimeout(connect, 4000);
   };
 }

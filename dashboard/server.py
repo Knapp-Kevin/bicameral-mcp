@@ -189,17 +189,17 @@ class DashboardServer:
         q = broadcaster.subscribe()
         try:
             while True:
-                data = await asyncio.wait_for(q.get(), timeout=30.0)
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # Keep connection alive with an SSE comment; loop and keep waiting.
+                    writer.write(b": keepalive\n\n")
+                    await writer.drain()
+                    continue
                 if data is None:
                     break
                 writer.write(f"data: {data}\n\n".encode())
                 await writer.drain()
-        except asyncio.TimeoutError:
-            # Send a comment keepalive so proxies don't close the connection
-            writer.write(b": keepalive\n\n")
-            await writer.drain()
-            # Re-register and continue listening — handled by the outer loop
-            # Re-enter is simpler than recursion: just return and let client reconnect
         except (ConnectionResetError, BrokenPipeError):
             pass
         finally:
