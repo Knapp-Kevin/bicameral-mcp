@@ -130,21 +130,27 @@ Render it verbatim — never suppress it, even when `fired=false`.
 
 ### 3. Decide whether to render
 
-Look at `response.fired`:
+**Always show relevant decisions when any are found** — even if
+`fired=false`. The decisions block is the primary value of preflight;
+silencing it when there's no urgent signal hides context the developer
+needs.
 
-- **`fired == false`** → produce **NO OUTPUT** about the preflight.
-  Do not say "I checked bicameral and found nothing." Do not say "no
-  relevant context." Just proceed silently with the user's original
-  request. The `reason` field tells you why — useful for debugging,
-  never user-facing. Possible reasons: `no_matches`,
-  `no_actionable_signal` (normal mode only, no drift/divergence),
-  `topic_too_generic` (failed deterministic topic validation),
-  `recently_checked` (per-session dedup — same topic checked recently),
-  `guided_mode_off` (hit signal but guided mode disabled and nothing
-  actionable), `preflight_disabled` (explicit env override mute).
+Look at `response.fired` and `reason`:
 
-- **`fired == true`** → render the surfaced block (next step) BEFORE
-  doing any code work.
+- **`no_matches` or `topic_too_generic`** → produce **NO OUTPUT**.
+  Nothing was found; there is nothing to surface. Proceed silently.
+
+- **`recently_checked`** → produce **NO OUTPUT**. Same topic was checked
+  in the last 5 minutes; the developer already saw the context.
+
+- **`preflight_disabled`** → produce **NO OUTPUT**. Explicitly muted.
+
+- **All other cases** (including `no_actionable_signal`, `guided_mode_off`,
+  or `fired=true`) → **always render the decisions block** with signoff
+  status. When `fired=true`, also render any drift, divergence, or
+  open-question blocks. Even when nothing is urgent, showing the N prior
+  decisions in scope — with their signoff state — is useful before any
+  code edit.
 
 ### 3.5 Scan recent user turns for uningested corrections
 

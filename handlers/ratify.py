@@ -1,11 +1,14 @@
-"""Handler for /bicameral.ratify MCP tool — v0.7.0.
+"""Handler for /bicameral.ratify MCP tool — v0.7.1.
 
-Promotes a decision's signoff from {state:'proposed'} to {state:'ratified'}.
-Calling ratify on an already-ratified decision is a no-op that returns the
-existing signoff record with was_new=False.
+Supports two actions:
+  - ratify (default): promotes signoff from proposed → ratified
+  - reject: records explicit rejection, steers agents away from implementing
 
-No unratify tool. Rescinding signoff requires writing a new decision that
-supersedes the previous one — clean audit trail, no hidden rollback.
+Both actions are idempotent: calling with the same target state is a no-op
+that returns the existing signoff with was_new=False.
+
+No unratify. Rescinding ratification or rejection requires writing a new
+decision that supersedes the previous one — clean audit trail, no rollback.
 """
 from __future__ import annotations
 
@@ -23,15 +26,23 @@ async def handle_ratify(
     decision_id: str,
     signer: str,
     note: str = "",
+    action: str = "ratify",
 ) -> RatifyResponse:
-    """Promote signoff from proposed → ratified.
+    """Set signoff on a decision.
 
-    Idempotent: calling ratify on an already-ratified decision returns
-    was_new=False and leaves the existing signoff record untouched.
+    action='ratify' (default): proposed → ratified. Drift tracking activates.
+    action='reject': records explicit rejection. The decision stays in the
+    ledger as a negative signal — agents consult it to avoid implementing
+    decisions the product team has explicitly rejected.
 
-    Writes {state:'ratified', signer, session_id, ratified_at, note} to
-    decision.signoff, then recomputes status via project_decision_status.
+    Idempotent: calling with the same action on an already-finalized decision
+    returns was_new=False and leaves the existing signoff untouched.
     """
+    if action not in ("ratify", "reject"):
+        raise ValueError(f"Unknown action '{action}'; must be 'ratify' or 'reject'")
+
+    target_state = "ratified" if action == "ratify" else "rejected"
+
     ledger = ctx.ledger
     if hasattr(ledger, "connect"):
         await ledger.connect()
@@ -42,13 +53,12 @@ async def handle_ratify(
     if not await decision_exists(client, decision_id):
         raise ValueError(f"No decision row for {decision_id}")
 
-    # Check if already ratified (idempotency: state == 'ratified' wins)
     rows = await client.query(
         f"SELECT signoff FROM {decision_id} LIMIT 1",
     )
     existing_signoff = (rows[0].get("signoff") if rows else None) or None
 
-    if existing_signoff and isinstance(existing_signoff, dict) and existing_signoff.get("state") == "ratified":
+    if existing_signoff and isinstance(existing_signoff, dict) and existing_signoff.get("state") == target_state:
         projected = await project_decision_status(client, decision_id)
         return RatifyResponse(
             decision_id=decision_id,
@@ -57,17 +67,28 @@ async def handle_ratify(
             projected_status=projected,
         )
 
-    # Build the ratified signoff object
     head_ref = getattr(ctx, "authoritative_sha", "") or ""
     session_id = getattr(ctx, "session_id", None) or ""
-    signoff = {
-        "state": "ratified",
-        "signer": signer,
-        "session_id": session_id,
-        "ratified_at": datetime.now(timezone.utc).isoformat(),
-        "source_commit_ref": head_ref,
-        "note": note,
-    }
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if action == "ratify":
+        signoff = {
+            "state": "ratified",
+            "signer": signer,
+            "session_id": session_id,
+            "ratified_at": now_iso,
+            "source_commit_ref": head_ref,
+            "note": note,
+        }
+    else:
+        signoff = {
+            "state": "rejected",
+            "signer": signer,
+            "session_id": session_id,
+            "rejected_at": now_iso,
+            "source_commit_ref": head_ref,
+            "note": note,
+        }
 
     await client.query(
         f"UPDATE {decision_id} SET signoff = $signoff",
@@ -78,8 +99,8 @@ async def handle_ratify(
     await update_decision_status(client, decision_id, projected)
 
     logger.info(
-        "[ratify] decision=%s signer=%s projected_status=%s",
-        decision_id, signer, projected,
+        "[ratify] decision=%s action=%s signer=%s projected_status=%s",
+        decision_id, action, signer, projected,
     )
 
     return RatifyResponse(

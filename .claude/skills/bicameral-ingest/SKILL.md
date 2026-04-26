@@ -162,8 +162,17 @@ Keep the business driver attached to each decision's description so the gap judg
 
 ### 1.5 Assign a feature group (stop-and-ask v0)
 
-After extracting candidate decisions and before resolving code regions,
-assign a **feature group** to each decision. A feature group is a short,
+**Before naming the feature group**, invoke the context sentry to pull
+existing ledger terminology:
+
+```
+Skill("bicameral-context-sentry", args="--mode naming --topic <2-4 word probe>")
+```
+
+Use the sentry's output to prefer existing feature group names and
+PM-legible phrasing from the ledger. Then:
+
+Assign a **feature group** to each decision. A feature group is a short,
 canonical noun phrase (2–4 words, title-case, no verbs): e.g.
 `"Google Calendar"`, `"Checkout Flow"`, `"Auth Middleware"`.
 
@@ -176,19 +185,17 @@ multiple groups when decisions clearly cover distinct, unrelated features.
 
 **Procedure:**
 
-1. **Name the feature group first** from the source title, query, or
-   dominant topic. Derive one candidate group name before examining
-   individual decisions. A short noun phrase (2–4 words, title-case):
+1. **Name the feature group first** from the context sentry output,
+   or from the source title / query if the sentry returned nothing.
+   A short noun phrase (2–4 words, title-case):
    `"Account Status"`, `"Email Dispatch"`, `"Checkout Flow"`.
 
 2. **Assign that group to every decision by default.** Only diverge for
    a specific decision if it's clearly about a different, unrelated
    feature — in which case go to step 4.
 
-3. **Prefer existing group names.** If `bicameral.history` was called
-   earlier in this session and its result is in context, match against
-   existing `HistoryFeature.name` values. Reuse verbatim if an existing
-   name shares ≥ 2 significant content words with the proposed group.
+3. **Prefer existing group names.** Reuse verbatim if the context sentry
+   found a match with ≥ 2 significant content words.
 
 4. **Stop-and-ask ONLY for cross-feature decisions.** If a specific
    decision clearly spans or belongs to a different feature than the
@@ -272,74 +279,25 @@ doesn't exist yet. For the pending case, ingest it with empty `code_regions`
 — it stays ungrounded until a future ingest or `bicameral.bind` call pins
 it to real code.
 
-### 2.5 Premise gate — supersession detection (stop-and-ask v1)
+### 2.5 Post-ingest reconciliation (context sentry HITL gate)
 
-After calling `bicameral.ingest`, read `IngestResponse.supersession_candidates`.
-Each entry is a prior decision whose text overlaps with one of the newly
-ingested decisions (top 3 per new decision via ledger keyword search).
-
-**v0.8.0: collision-held status.** When `supersession_candidates` is non-empty
-for a mapping, that new decision is held at `status='proposal'` with
-`signoff.state='collision_pending'` — it does NOT enter the live decision set
-until you resolve the collision via `bicameral.resolve_collision`. This prevents
-the graph from silently accumulating contradictory decisions.
-
-Classify each candidate:
-
-- **mechanical** (parallel scope) — the prior decision covers a
-  different code area, team, or lifecycle phase than the new one.
-  Call `bicameral.resolve_collision(new_id=..., old_id=..., action='keep_both')`.
-  Both decisions become live proposals. No supersedes edge written.
-- **ask** (true supersession) — the prior decision appears to make a
-  contradictory or superseded claim about the same behavior. Emit
-  ONE question per ask-candidate, capped at **3 questions per ingest**.
-  On confirmation, call `bicameral.resolve_collision(new_id=..., old_id=..., action='supersede')`.
-  The old decision becomes `status='superseded'`; the new one enters normal flow.
-
-If the queue of ask-candidates exceeds 3, emit the first 3 as
-individual questions, then present a batched final approval gate for
-the remainder:
+After calling `bicameral.ingest`, pass the full `IngestResponse` to the
+context sentry for knowledge graph reconciliation and HITL probing:
 
 ```
-Bicameral flagged N more potential supersessions that I didn't ask
-individually. Options:
-  A. Proceed — record all as parallel decisions (treat as non-superseding)
-  B. Review them now — list them all and you pick for each
-  C. Cancel this ingest — let me refine the payload first
-RECOMMENDATION: Choose A if these are decisions from different product
-areas; B if any appear to change a commitment the team has already
-shipped against.
+Skill("bicameral-context-sentry", args="<IngestResponse JSON>")
 ```
 
-**Session-drop recovery**: if the session ends before `bicameral.resolve_collision`
-is called, the new decision remains `status='proposal'` (collision_pending) in the
-ledger. Bicameral preflight surfaces it as an "unresolved collision" at the next
-session. Resolve it then, or call `bicameral.reset` scoped to that decision to discard it.
+The sentry handles all stop-and-ask gates in the correct order:
+- **Probe B** — supersession candidates (from `supersession_candidates`)
+- **Probe C** — context-for candidates (from `context_for_candidates`)
+- **Gate C** — grounding candidates (from `sync_status.pending_compliance_checks`)
 
-**Advisory-mode override:** if `BICAMERAL_GUIDED_MODE=0`, present
-supersession candidates as informational notes only; do not gate
-the ingest.
+See `skills/bicameral-context-sentry/SKILL.md` for the full probe
+contract, resolution logic, and session-drop recovery rules.
 
-### 2.6 Context-for proposals (stop-and-ask v1b)
-
-After calling `bicameral.ingest`, also read `IngestResponse.context_for_candidates`.
-Each entry is a `context_pending` decision (one that needs business context before
-ratification) whose description keyword-matches the newly ingested span text.
-
-For each candidate, present:
-```
-This excerpt may answer the open question for decision [decision_description]:
-  "<span excerpt>"
-
-Does this span provide the context needed for that decision? [Y/n]
-```
-
-On **confirm** (`confirmed=true`): call
-`bicameral.resolve_collision(span_id=..., decision_id=..., confirmed=True)`.
-An `input_span → context_for → decision` edge is written with `state='confirmed'`.
-
-On **reject** (`confirmed=false`): call with `confirmed=False`. The edge is
-written with `state='rejected'` so this span isn't re-surfaced on future ingests.
+Do not re-implement supersession or context-for handling here. All HITL
+logic lives in the context sentry.
 
 The decision does NOT automatically advance — it stays `context_pending` until
 `bicameral.ratify` is called explicitly (typically after the next preflight surfaces
@@ -474,91 +432,43 @@ Show the user:
 - How many were ingested, how many mapped to code, how many are ungrounded
 - If decisions were dropped, briefly list what was excluded and why (e.g., "Dropped 3 strategic/market decisions")
 
-### 5. Present the auto-fired brief (v0.4.8+)
-
-`bicameral.ingest` auto-fires `bicameral.brief` on a topic derived from the
-payload and returns the brief inside `IngestResponse.brief`. When `brief`
-is non-null, present it immediately after the ingest summary using the
-presentation contract below.
-
-**Presentation order** — always strict, skip empty buckets silently:
-
-1. **`divergences` — ALWAYS FIRST if non-empty.** Two contradictory
-   decisions on the same symbol is the highest-stakes signal the brief
-   can carry. The meeting's first agenda item should be picking which one
-   wins. Surface each divergence as a bold warning with the symbol, file,
-   and summary line.
-2. **`drift_candidates`** — decisions whose code diverged from recorded
-   intent. Present each with status badge (`⚠ DRIFTED`), file:line, and
-   drift evidence.
-3. **`decisions`** — the full set of in-scope decisions, grouped by status.
-   Skip any that already appear in `drift_candidates` to avoid duplication.
-4. **`gaps`** — open questions and ungrounded decisions. Present as a
-   bulleted list.
-5. **`suggested_questions`** — **Surface these VERBATIM**, never paraphrase.
-   They're templated to be neutral-voice; paraphrasing reintroduces the
-   "me vs you" framing the tool exists to remove.
-
-**Action hints** — the brief response includes `action_hints`. Two intensities,
-controlled by `guided: bool` in `.bicameral/config.yaml` or the
-`BICAMERAL_GUIDED_MODE=1` env override:
-
-- **Normal mode** (`guided: false`, default) — hints fire with `blocking: false`
-  and advisory tone. Mention the hint in one line and continue.
-- **Guided mode** (`guided: true`) — hints fire with `blocking: true` and
-  imperative tone. **Address each blocking hint before any write operation**
-  (file edit, commit, PR, `bicameral_ingest`).
-
-Hint kinds that can fire on brief responses:
-- **`resolve_divergence`** — two non-superseded decisions contradict on the
-  same symbol. Highest-stakes signal.
-- **`review_drift`** — one or more decisions in scope have drifted.
-- **`answer_open_questions`** — gap extraction found open-question-shaped gaps.
-
-**Never paraphrase a hint's `message` field** — surface it verbatim.
-
-When `brief` is `null` (the payload had no derivable topic or the chained
-brief call failed), skip this step silently. The ingest summary from step 4
-is sufficient on its own.
-
-### 6. Apply the gap-judge rubric (v0.4.16+)
+### 5. Apply the gap-judge rubric (v0.4.16+)
 
 When the ingest response contains a non-null `judgment_payload`, chain
 into the `bicameral-judge-gaps` skill to render the rubric sections.
 
-- The `judgment_payload` is only attached by the ingest → brief auto-chain
-  (never by standalone `bicameral.brief` calls). If you see it, it means
-  the brief produced at least one decision and the server built a context
-  pack for caller-session reasoning.
+The server attaches `judgment_payload` directly (via `handle_judge_gaps`)
+when BM25 search finds decisions that match the ingested topic. It is
+populated independently of any other field — check it directly:
+
+```python
+if response.judgment_payload is not None:
+    Skill("bicameral-judge-gaps", args=response.judgment_payload)
+```
+
 - **Apply the rubric in your own session**. The server has already
   shipped you the decisions (with source excerpts), the rubric (5
   categories, fixed order), and the `judgment_prompt`. Your job is to
-  reason over the pack using your own LLM context and, for the
-  `infrastructure_gap` category, use your Glob / Read / Grep tools to
-  verify implied infrastructure against the category's `canonical_paths`.
+  reason over the pack using your own LLM context.
 - **Output one section per category, in rubric order**. Each section
   starts with the category's `title` as a header. The body uses the
   category's `output_shape`:
   - `bullet_list` → a plain bulleted list
   - `happy_sad_table` → a two-column table (Happy path specified ↔ Missing sad path)
   - `checklist` → `✓ / ○ / ?` prefixed items
-  - `absence_matrix` → a checkbox grid
   - `dependency_radar` → a system-by-system list with ✓ discussed / ○ not discussed
 - **Cite everything**. Every bullet / row / checklist item must reference
-  either a `source_ref` + `meeting_date` from the payload OR a `file:line`
-  from your codebase crawl. An uncited item is a bug in your output.
+  either a `source_ref` + `meeting_date` from the payload. An uncited item
+  is a bug in your output.
 - **Surface VERBATIM**. Quote `source_excerpt` directly. Never paraphrase
   the rubric prompts, never editorialize, never add "as an AI…" hedges.
 - **Honest empty path**. If a category produces no findings for this
-  pack, emit exactly this single line under its header: `✓ no gaps found`.
-  Do not skip the header — the user needs to see that the category was
-  applied and found nothing, which itself is information.
+  pack, emit exactly: `✓ no gaps found`. Do not skip the header.
 
 The full rendering contract is in `skills/bicameral-judge-gaps/SKILL.md`.
-This step is a delegation pointer.
 
-When `judgment_payload` is `null` (the brief had no decisions, or the
-chain failed), skip this step silently.
+When `judgment_payload` is `null` (no decisions matched the topic, or
+the gap-judge chain failed), skip this step silently.
 
 ## Arguments
 
