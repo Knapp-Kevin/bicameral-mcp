@@ -142,6 +142,8 @@ body {
 .dec.s-discovered::before { background: var(--purple); }
 .dec.s-gap::before        { background: var(--amber); }
 .dec.s-superseded::before { background: var(--border); }
+.dec.s-superseded .d-text { text-decoration: line-through; opacity: 0.55; }
+.dec.s-superseded .d-ratified-col { opacity: 0.55; }
 .dec:hover  { background: rgba(27,54,93,0.025); }
 .dec.open   { background: rgba(27,54,93,0.03); }
 
@@ -306,6 +308,10 @@ body {
     <input type="checkbox" id="show-proposed" checked onchange="applyToggle()">
     show proposed
   </label>
+  <label class="topbar-toggle">
+    <input type="checkbox" id="show-superseded" onchange="applyToggle()">
+    show superseded
+  </label>
   <span id="tref" class="topbar-ref"></span>
 </header>
 
@@ -452,8 +458,9 @@ function renderCodeRegions(d) {
 function renderDec(d, idx) {
   const stCls = `s-${d.status || 'ungrounded'}`;
   const proposed = isProposed(d);
+  const superseded = d.status === 'superseded';
   return `
-<div class="dec ${stCls}${proposed ? ' is-proposed' : ''}" id="d${idx}" onclick="toggleDec(this)">
+<div class="dec ${stCls}${proposed ? ' is-proposed' : ''}${superseded ? ' is-superseded' : ''}" id="d${idx}" onclick="toggleDec(this)">
   <div class="dec-hdr">
     <div class="d-ratified-col">${renderRatPill(d)}</div>
     <div class="d-text-col">
@@ -528,9 +535,13 @@ function render(data) {
 
 // ── proposed toggle ───────────────────────────────────────────
 function applyToggle() {
-  const show = document.getElementById('show-proposed').checked;
+  const showProposed   = document.getElementById('show-proposed').checked;
+  const showSuperseded = document.getElementById('show-superseded').checked;
   document.querySelectorAll('.dec.is-proposed').forEach(el => {
-    el.style.display = show ? '' : 'none';
+    el.style.display = showProposed ? '' : 'none';
+  });
+  document.querySelectorAll('.dec.is-superseded').forEach(el => {
+    el.style.display = showSuperseded ? '' : 'none';
   });
 }
 
