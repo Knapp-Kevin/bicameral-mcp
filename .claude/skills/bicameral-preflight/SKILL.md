@@ -108,7 +108,13 @@ The handler runs `bicameral.search` internally, gates on the user's
 `guided_mode` setting, conditionally chains to `bicameral.brief`, and
 returns a `PreflightResponse` with a `fired: bool` field.
 
-### 2.5 Handle pending compliance checks (auto-index sweep)
+The response also carries an optional `sync_metrics`
+(`{sync_catchup_ms, barrier_held_ms}`) observability field for the
+catch-up time spent in `ensure_ledger_synced`. **Skip rendering it** —
+these are server-side latency numbers, not user-visible signal. Log
+them if you're profiling, otherwise ignore.
+
+### 2.5 Render session-start banner if present
 
 Before evaluating `response.fired`, check `response._pending_compliance_checks`.
 If non-null and non-empty, a new commit was just detected and the ledger needs
@@ -183,6 +189,14 @@ Categories with no ask-findings are silently skipped. If every
 finding in every category is mechanical, produce NO output (same as
 `fired=false` — silent).
 
+**Cosmetic drift rule**: if a `drifted` entry has `cosmetic_hint=true`,
+classify it as **mechanical** regardless of guided mode. The server has
+verified via AST comparison that the change is whitespace-only and
+semantically inert — the stored intent is still intact. Auto-resolve
+silently; do NOT add it to the drift ask-queue and do NOT emit a
+blocking hint. Render it with `~` prefix (not `⚠ DRIFTED:`) if you
+render it at all — see the template in Step 5.
+
 ### 5. Render the surfaced block
 
 When at least one ask-finding exists, surface the response using this
@@ -202,6 +216,11 @@ format. Lead with the `(bicameral surfaced)` attribution line.
     <file_path>:<symbol>:<lines>
     Source: <source_ref>
     Drift evidence: <drift_evidence verbatim>
+
+  ~ REFORMATTED: <decision description>      ← cosmetic_hint=true only
+    <file_path>:<symbol>:<lines>
+    Source: <source_ref>
+    (whitespace-only change — intent intact, no action needed)
 
 ⚠ N divergent decision pair(s) — pick a winner before continuing:
   • <symbol> (<file_path>): <summary>
@@ -295,8 +314,9 @@ For every finding this skill surfaces, classify first:
 
 - **mechanical** — one obvious correct answer (e.g., renamed symbol
   with identical signature; a decision whose code moved but semantics
-  are intact). Auto-apply the resolution silently. Do NOT ask the
-  user.
+  are intact; a `drifted` entry with `cosmetic_hint=true` — AST
+  comparison confirmed whitespace-only change). Auto-apply the
+  resolution silently. Do NOT ask the user.
 - **ask** — reasonable people could disagree (e.g., drifted behavior
   where the old decision may still be valid; divergent decisions where
   no clear winner exists). Emit ONE question per finding, using the

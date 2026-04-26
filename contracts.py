@@ -22,6 +22,19 @@ from pydantic import BaseModel
 # ── Shared sub-types ─────────────────────────────────────────────────
 
 
+class SyncMetrics(BaseModel):
+    """V1 A3 instrumentation — wall-clock timings for sync + write-barrier.
+
+    Populated by sync_middleware.ensure_ledger_synced (sync_catchup_ms) and
+    sync_middleware.repo_write_barrier (barrier_held_ms). Either field may
+    be ``None`` if that path did not run in the handler — e.g. ledger was
+    already synced, or the handler did not take the write barrier.
+    """
+    sync_catchup_ms: float | None = None
+    barrier_held_ms: float | None = None
+
+
+
 class CodeRegionSummary(BaseModel):
     """Lean code region for MCP responses — no pipeline metadata."""
     file_path: str
@@ -193,6 +206,7 @@ class SearchDecisionsResponse(BaseModel):
     ungrounded_count: int
     suggested_review: list[str]      # decision_ids of drifted/pending to review first
     action_hints: list[ActionHint] = []
+    sync_metrics: SyncMetrics | None = None  # V1 A3 — catch-up / barrier wall times
 
 
 # ── Tool 3: /detect_drift ────────────────────────────────────────────
@@ -208,6 +222,11 @@ class DriftEntry(BaseModel):
     source_ref: str
     source_excerpt: str = ""
     meeting_date: str = ""
+    # V1 B2 — advisory metadata for the eventual V2 caller-LLM verdict prompt.
+    # True only for drifted entries whose HEAD-vs-working-tree byte diff is
+    # provably semantics-preserving per ledger.ast_diff.is_cosmetic_change.
+    # NEVER gates drift surfacing or status; pure metadata.
+    cosmetic_hint: bool = False
 
 
 class DetectDriftResponse(BaseModel):
@@ -454,6 +473,7 @@ class PreflightResponse(BaseModel):
     # v0.8.0 HITL annotations (topic-independent, ledger health)
     unresolved_collisions: list[BriefDecision] = []   # collision_pending from prior sessions
     context_pending_ready: list[BriefDecision] = []   # context_pending with ≥1 confirmed context_for
+    sync_metrics: SyncMetrics | None = None  # V1 A3 — catch-up wall times
 
 
 # ── Tool 10: /bicameral_judge_gaps ───────────────────────────────────
@@ -605,6 +625,7 @@ class HistoryResponse(BaseModel):
     truncated: bool = False
     total_features: int = 0
     as_of: str = ""               # git ref evaluated against
+    sync_metrics: SyncMetrics | None = None  # V1 A3 — catch-up wall times
 
 
 # ── Tool 13: bicameral.dashboard ─────────────────────────────────────
@@ -632,6 +653,7 @@ class BindResult(BaseModel):
 class BindResponse(BaseModel):
     """Response envelope for bicameral.bind."""
     bindings: list[BindResult]
+    sync_metrics: SyncMetrics | None = None  # V1 A3 — write-barrier hold time
 
 
 # Forward references

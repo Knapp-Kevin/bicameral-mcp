@@ -111,6 +111,13 @@ async def test_pending_grounding_checks_for_ungrounded_decisions(_isolated_ledge
     # The ungrounded decision should appear
     reasons = [c.get("reason") for c in lc_resp.pending_grounding_checks]
     assert "ungrounded" in reasons
+    # V1 verification-instruction split (post-pass-12 fix): for an
+    # ungrounded-only response, the bind CTA is the right answer (no prior
+    # binding to retire, no duplicate-binding risk). The relocation
+    # warning must NOT appear.
+    instr = lc_resp.verification_instruction
+    assert "bicameral.bind" in instr, f"missing bind CTA: {instr}"
+    assert "INFORMATIONAL ONLY" not in instr, f"unexpected relocation warning: {instr}"
 
 
 # ── 2. Symbol disappeared → grounding check emitted ──────────────────────────
@@ -185,4 +192,26 @@ async def test_pending_grounding_checks_symbol_not_found(_isolated_ledger):
     assert len(disappeared_checks) >= 1, (
         f"Expected symbol_disappeared grounding check, got: {grounding_checks}"
     )
-    assert disappeared_checks[0]["symbol"] == "fetch_user"
+    entry = disappeared_checks[0]
+    assert entry["symbol"] == "fetch_user"
+    # V1 D1: original_lines lets the caller LLM inspect the prior code via
+    # `git show <prev_ref>:<file_path>` to ground its own retrieval.
+    assert "original_lines" in entry, (
+        f"Expected original_lines in symbol_disappeared payload, got: {entry}"
+    )
+    start, end = entry["original_lines"]
+    assert isinstance(start, int) and isinstance(end, int)
+    assert start >= 1 and end >= start, f"Invalid original_lines {entry['original_lines']}"
+
+    # V1 / Codex pass-12 fix: relocation cases must NOT route through
+    # bicameral.bind (would leave the old edge live → duplicate-binding
+    # state under N:N binds_to). The verification instruction must
+    # explicitly mark symbol_disappeared as INFORMATIONAL ONLY and
+    # forbid the bind CTA.
+    instr = lc_resp.verification_instruction
+    assert "INFORMATIONAL ONLY" in instr, (
+        f"Expected relocation warning in verification_instruction, got: {instr!r}"
+    )
+    assert "Do NOT call bicameral.bind" in instr or "do not bind directly" in instr, (
+        f"Expected explicit bind-prohibition for relocation, got: {instr!r}"
+    )

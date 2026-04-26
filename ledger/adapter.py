@@ -436,6 +436,13 @@ class SurrealDBLedgerAdapter:
                 old_status = decision.get("status", "ungrounded")
 
                 # If symbol disappeared, emit a grounding check instead of compliance check.
+                # V1 D1: the payload is informational only — no server-side
+                # candidate suggestions (search_code was removed in v0.6.4).
+                # The caller LLM finds the new location via Grep/Read +
+                # validate_symbols / extract_symbols, then calls bicameral.bind
+                # (per the verification_instruction). ``original_lines`` is
+                # included so the caller can inspect the prior code via
+                # ``git show <prev_ref>:<file_path>`` if useful.
                 if symbol_disappeared:
                     pending_grounding_checks.append({
                         "decision_id": decision_id,
@@ -443,6 +450,7 @@ class SurrealDBLedgerAdapter:
                         "reason": "symbol_disappeared",
                         "file_path": file_path,
                         "symbol": symbol_name,
+                        "original_lines": [start_line, end_line],
                     })
                     continue
 
@@ -489,8 +497,13 @@ class SurrealDBLedgerAdapter:
         try:
             ungrounded_decisions = await get_all_decisions(self._client, filter="ungrounded")
             for d in ungrounded_decisions:
+                # get_all_decisions returns rows with `decision_id` (aliased
+                # from id via `type::string(id) AS decision_id`); reading
+                # `d["id"]` returns "" and produces unusable grounding
+                # checks the caller cannot bind against. Surfaced by V1 F1
+                # regression coverage.
                 pending_grounding_checks.append({
-                    "decision_id": str(d.get("id", "")),
+                    "decision_id": str(d.get("decision_id") or d.get("id", "")),
                     "description": str(d.get("description", "")),
                     "reason": "ungrounded",
                 })

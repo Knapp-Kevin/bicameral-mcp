@@ -53,7 +53,7 @@ The handler returns a `ScanBranchResponse` with:
 - `base_ref` / `head_ref` — the resolved refs that were diffed
 - `sweep_scope` — `"range_diff"` (default, good), `"head_only"` (base was unreachable — fell back to HEAD-only scope, surface to user), or `"range_truncated"` (range exceeded the 200-file cap; the scan ran on the first 200 files, rest need a separate pass)
 - `range_size` — number of files the sweep covered
-- `decisions` — deduped list of `DriftEntry` across all files (each decision shows up once even if it touches multiple files)
+- `decisions` — deduped list of `DriftEntry` across all files (each decision shows up once even if it touches multiple files). Drifted entries may carry `cosmetic_hint=true` when the HEAD-to-working-tree diff for that region is provably whitespace-only per the strict tree-sitter classifier (`ledger/ast_diff.is_cosmetic_change`). The hint is **advisory metadata only** — it never gates drift surfacing or status, and the entry stays in the drifted bucket regardless. Treat it as a render-time signal: a cosmetic-hinted drift is still drift the user must address.
 - `files_changed` — the file paths that were swept
 - `drifted_count` / `pending_count` / `ungrounded_count` / `reflected_count`
 - `undocumented_symbols` — union across all files

@@ -222,3 +222,151 @@ async def test_banner_silent_on_fresh_proposal():
     ctx = _make_ctx(open_rows=[_proposal(days_old=3)])
     banner = await get_session_start_banner(ctx)
     assert banner is None
+
+
+# ── V1 A2-light: repo_write_barrier ─────────────────────────────────
+
+
+@pytest.fixture
+def _reset_locks():
+    """Drop the per-repo lock registry before and after each test so lock
+    identity is deterministic across tests in the same process."""
+    from handlers.sync_middleware import _reset_repo_locks_for_tests
+    _reset_repo_locks_for_tests()
+    yield
+    _reset_repo_locks_for_tests()
+
+
+def _barrier_ctx(repo_path: str):
+    ctx = MagicMock()
+    ctx.repo_path = repo_path
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_repo_write_barrier_serializes_same_repo(_reset_locks):
+    """Two concurrent barrier-holders for the same repo MUST serialize.
+
+    Proves the in-process race window V1 A2-light is closing: a second
+    bind call cannot observe the ledger while the first is mid-write.
+    """
+    import asyncio
+    from handlers.sync_middleware import repo_write_barrier
+
+    events: list[str] = []
+
+    async def task(name: str, hold_ms: int):
+        ctx = _barrier_ctx("/repo/a")
+        async with repo_write_barrier(ctx) as _t:
+            events.append(f"{name}:enter")
+            await asyncio.sleep(hold_ms / 1000)
+            events.append(f"{name}:exit")
+
+    await asyncio.gather(task("first", 50), task("second", 10))
+
+    # First must fully exit before second enters — no interleaving.
+    assert events == ["first:enter", "first:exit", "second:enter", "second:exit"], events
+
+
+@pytest.mark.asyncio
+async def test_repo_write_barrier_allows_different_repos_concurrently(_reset_locks):
+    """Different repos use different locks and MUST run in parallel."""
+    import asyncio
+    from handlers.sync_middleware import repo_write_barrier
+
+    events: list[str] = []
+
+    async def task(name: str, repo: str):
+        ctx = _barrier_ctx(repo)
+        async with repo_write_barrier(ctx) as _t:
+            events.append(f"{name}:enter")
+            await asyncio.sleep(0.05)
+            events.append(f"{name}:exit")
+
+    await asyncio.gather(task("A", "/repo/a"), task("B", "/repo/b"))
+
+    # Both entered before either exited — barriers on different repos
+    # do not block each other.
+    assert events[:2] == ["A:enter", "B:enter"] or events[:2] == ["B:enter", "A:enter"]
+    assert set(events) == {"A:enter", "A:exit", "B:enter", "B:exit"}
+
+
+@pytest.mark.asyncio
+async def test_repo_write_barrier_releases_on_exception(_reset_locks):
+    """If the body raises, the lock must still release so the next caller proceeds."""
+    import asyncio
+    from handlers.sync_middleware import repo_write_barrier
+
+    ctx = _barrier_ctx("/repo/a")
+
+    with pytest.raises(RuntimeError):
+        async with repo_write_barrier(ctx) as _t:
+            raise RuntimeError("boom")
+
+    async def reacquire():
+        async with repo_write_barrier(ctx) as _t:
+            return "ok"
+
+    result = await asyncio.wait_for(reacquire(), timeout=1.0)
+    assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_repo_write_barrier_falls_back_when_repo_path_missing(_reset_locks):
+    """Missing ctx.repo_path falls back to a default key and still serializes."""
+    import asyncio
+    from handlers.sync_middleware import repo_write_barrier
+
+    class _Bare:
+        pass
+
+    ctx = _Bare()
+
+    events: list[str] = []
+
+    async def task(name: str):
+        async with repo_write_barrier(ctx) as _t:
+            events.append(f"{name}:enter")
+            await asyncio.sleep(0.03)
+            events.append(f"{name}:exit")
+
+    await asyncio.gather(task("x"), task("y"))
+
+    assert events[0].endswith(":enter") and events[1].endswith(":exit")
+    assert events[2].endswith(":enter") and events[3].endswith(":exit")
+
+
+# ── V1 A3: barrier timing yield ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_repo_write_barrier_reports_held_ms(_reset_locks):
+    """BarrierTiming.held_ms is populated on exit and is non-negative."""
+    import asyncio
+    from handlers.sync_middleware import repo_write_barrier
+
+    ctx = _barrier_ctx("/repo/a")
+    async with repo_write_barrier(ctx) as timing:
+        assert timing.held_ms is None  # not yet populated
+        await asyncio.sleep(0.02)
+    assert timing.held_ms is not None
+    assert timing.held_ms >= 20.0  # we slept 20ms, measured wall clock should reflect it
+    assert timing.held_ms < 500.0  # and not be absurd
+
+
+@pytest.mark.asyncio
+async def test_repo_write_barrier_reports_held_ms_on_exception(_reset_locks):
+    """held_ms is set even when the body raises."""
+    from handlers.sync_middleware import repo_write_barrier
+
+    ctx = _barrier_ctx("/repo/a")
+    captured_timing = None
+
+    with pytest.raises(RuntimeError):
+        async with repo_write_barrier(ctx) as timing:
+            captured_timing = timing
+            raise RuntimeError("boom")
+
+    assert captured_timing is not None
+    assert captured_timing.held_ms is not None
+    assert captured_timing.held_ms >= 0.0

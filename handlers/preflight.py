@@ -276,6 +276,16 @@ async def handle_preflight(
             guided_mode=guided_mode,
         )
 
+    # V1 A3: time the call locally so the metric reflects THIS handler's catch-up.
+    import time as _time
+    from handlers.sync_middleware import ensure_ledger_synced
+    from contracts import SyncMetrics
+    _t0 = _time.perf_counter()
+    await ensure_ledger_synced(ctx)
+    sync_metrics = SyncMetrics(
+        sync_catchup_ms=round((_time.perf_counter() - _t0) * 1000, 3)
+    )
+
     sources_chained: list[str] = []
 
     # Step 1a — region-anchored lookup: caller-supplied file_paths → pinned decisions.
@@ -310,6 +320,7 @@ async def handle_preflight(
             fired=False,
             reason="no_matches",
             guided_mode=guided_mode,
+            sync_metrics=sync_metrics,
         )
 
     # Merge: region-anchored results first (direct pin = high precision),
@@ -325,6 +336,7 @@ async def handle_preflight(
             reason="no_matches",
             guided_mode=guided_mode,
             sources_chained=sources_chained,
+            sync_metrics=sync_metrics,
         )
 
     # Search-level gate: in normal mode, require actionable signal.
@@ -358,6 +370,7 @@ async def handle_preflight(
             reason=reason,  # type: ignore[arg-type]
             guided_mode=guided_mode,
             sources_chained=sources_chained,
+            sync_metrics=sync_metrics,
         )
 
     decisions = [_to_brief_decision(m) for m in search_resp.matches]
@@ -410,4 +423,5 @@ async def handle_preflight(
         sources_chained=sources_chained,
         unresolved_collisions=unresolved_collisions,
         context_pending_ready=context_pending_ready,
+        sync_metrics=sync_metrics,
     )

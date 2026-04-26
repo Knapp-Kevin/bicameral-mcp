@@ -34,6 +34,8 @@ bicameral.history(
 )
 ```
 
+The response also carries an optional `sync_metrics` (`{sync_catchup_ms, barrier_held_ms}`) observability field for the catch-up time spent inside `ensure_ledger_synced`. **Skip rendering it** — these are server-side latency numbers, not user-visible signal. Log them if you're profiling, otherwise ignore.
+
 ## How to present
 
 Group decisions by `HistoryFeature`. For each group:
