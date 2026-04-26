@@ -3,7 +3,7 @@
 All notable changes to bicameral-mcp are tracked here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased — desync optimization V1 — measurement + read-path advisory
+## v0.9.2 — desync optimization V1 — measurement + read-path advisory
 
 V1 of a two-part desync-correctness initiative. V1 ships measurement
 infrastructure, a strict-whitelist cosmetic-change classifier, relocation
