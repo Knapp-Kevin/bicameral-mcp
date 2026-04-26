@@ -10,7 +10,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from surrealdb import AsyncSurreal, RecordID, SurrealError
+from surrealdb import AsyncSurreal, RecordID
+try:
+    from surrealdb import SurrealError
+except ImportError:
+    SurrealError = Exception  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 

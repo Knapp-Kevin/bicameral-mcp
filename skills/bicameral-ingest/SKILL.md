@@ -395,9 +395,9 @@ payload: {
   query: "<topic / feature area — drives the auto-brief>",
   mappings: [
     {
-      intent: "Cache user sessions in Redis for horizontal scaling",
+      intent: "Redis-backed sessions for horizontal scale",
       span: {
-        text: "<source excerpt>",
+        text: "we're moving sessions to Redis so we can scale horizontally — Brian committed to this before Black Friday",
         source_type: "transcript",
         source_ref: "sprint-14-planning",
         meeting_date: "2026-04-15",
@@ -427,11 +427,13 @@ payload: {
   participants: ["Ian", "Brian"],             # optional
   decisions: [
     {
-      description: "Cache user sessions in Redis for horizontal scaling",
+      description: "Redis-backed sessions for horizontal scale",
+      source_excerpt: "we're moving sessions to Redis so we can scale horizontally — Brian committed to this before Black Friday",
       id: "sprint-14-planning#session-cache"  # optional stable id
     },
     {
-      description: "Ship SOC2-compliant session storage by Q3"
+      description: "SOC2-compliant session storage before Q3 audit",
+      source_excerpt: "Lena: we need this landed before the audit window closes in June"
     }
   ],
   action_items: [
@@ -443,7 +445,11 @@ payload: {
 **Field rules** — get these right or decisions evaporate:
 
 - **`mappings[].code_regions`** is the whole game. When you pass explicit regions, the decision is bound exactly where you said. No server-side guessing, no false positives from vocab mismatch.
-- **`decisions[].description`** is the canonical text field. `title` is accepted as a synonym for back-compat; `text` is tolerated as an alias (v0.4.16+). At least one of the three must be non-empty or the decision is silently dropped.
+- **`decisions[].description`** is the concise business decision name — ≤15 words, outcome/commitment framing, no raw code identifiers. It is what appears as the title in the dashboard. Think of it as the answer to "what did the team commit to?" not "how was it implemented?".
+  - Good: `"Opaque Zoom keys prevent cross-group identity leakage"` / `"Redis rate limiter fulfills enterprise 1k req/min SLA"`
+  - Bad: `"zoom_member_keys table uses am_-prefixed opaque zoom_user_key instead of Supabase IDs"` / `"Move rate limiter from in-memory to Redis with 1000-requests-per-minute cap keyed on tenant ID"`
+  - `title` is accepted as a synonym; `text` is tolerated as an alias. At least one must be non-empty or the decision is silently dropped.
+- **`decisions[].source_excerpt`** (natural format) / **`mappings[].span.text`** (internal format) must carry the **verbatim quote** from the source — what was actually said or written. This is stored separately in the ledger as `input_span.text` and surfaces as the source quote in the dashboard. **Never leave it empty and never copy `description` into it** — if the source is a transcript, quote the speaker directly; if a PRD, quote the relevant sentence. If no clean verbatim quote exists, write a 1-sentence paraphrase of what was said, enclosed in brackets: `"[Paraphrase: team agreed to use Redis to meet the scale commitment]"`.
 - **`action_items[].action`** is the canonical text field. `text` is tolerated as an alias (v0.4.16+). `owner` defaults to `"unassigned"`. `due` is an optional ISO date.
 - **`query`** is load-bearing: it's the topic the post-ingest auto-brief and gap-judge chain fire on. If you omit it, the handler falls through to the longest decision description as a topic guess — usable but less focused. **When fanning out from the boundary-detection flow (step 0), always pass each segment's title as `query`.**
 - **`participants`** (natural format) or **`span.speakers`** (internal format) records the meeting attendees.
@@ -464,7 +470,8 @@ payload: {
   date: "<ISO date>",
   decisions: [
     {
-      description: "zoom_member_keys: opaque keys instead of Supabase IDs",
+      description: "Opaque Zoom keys prevent cross-group identity leakage",
+      source_excerpt: "we're going to use opaque zoom_user_key instead of Supabase IDs to prevent user matching across groups",
       signoff: {
         state: "context_pending",
         context_question: "Is this driven by: (a) a privacy/vendor data-isolation requirement, (b) a compliance audit, (c) a customer contract clause, or (d) engineering hygiene only?",
