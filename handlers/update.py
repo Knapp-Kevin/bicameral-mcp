@@ -90,37 +90,29 @@ def get_update_notice(current_version: str) -> dict | None:
 
 
 def _reinstall_skills(repo_path: str) -> int:
-    """Re-copy skill SKILL.md files from the newly-installed package into the repo."""
+    """Re-copy skill SKILL.md files and hooks from the newly-installed package.
+
+    Runs in a fresh subprocess so the newly-installed setup_wizard is used —
+    the current process has the old version cached in sys.modules.
+    """
     try:
-        import importlib.util
-        spec = importlib.util.find_spec("setup_wizard")
-        if spec is None or spec.origin is None:
-            return 0
-        from pathlib import Path
-        skills_src = Path(spec.origin).parent / "skills"
-        if not skills_src.exists():
-            return 0
-        skills_dst = Path(repo_path) / ".claude" / "skills"
-        count = 0
-        for skill_dir in sorted(skills_src.iterdir()):
-            if not skill_dir.is_dir():
-                continue
-            skill_md = skill_dir / "SKILL.md"
-            if not skill_md.exists():
-                continue
-            dst_dir = skills_dst / skill_dir.name
-            dst_dir.mkdir(parents=True, exist_ok=True)
-            (dst_dir / "SKILL.md").write_text(skill_md.read_text())
-            count += 1
-
-        # Re-install the git hook alongside skills on every upgrade
-        try:
-            from setup_wizard import _install_claude_hooks
-            _install_claude_hooks(Path(repo_path))
-        except Exception:
-            pass
-
-        return count
+        script = (
+            "from setup_wizard import _install_skills, _install_claude_hooks; "
+            "from pathlib import Path; "
+            f"n = _install_skills(Path(r'{repo_path}')); "
+            f"_install_claude_hooks(Path(r'{repo_path}')); "
+            "print(n)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip() or "0")
+        logger.debug("[update] skill reinstall subprocess failed: %s", result.stderr.strip())
+        return 0
     except Exception as exc:
         logger.debug("[update] skill reinstall failed: %s", exc)
         return 0
