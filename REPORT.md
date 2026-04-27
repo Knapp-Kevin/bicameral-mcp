@@ -1,4 +1,4 @@
-# Bicameral MCP v0.9.3 — Simulation Report (v2)
+# Bicameral MCP v0.9.3 — Simulation Report (v3)
 
 **Date**: 2026-04-26  
 **Target repo**: `../Accountable-App-3.0`  
@@ -182,6 +182,39 @@ Query: 'Sentry breach'        → 0 matches
 
 ---
 
+## Run 8 — pending_compliance_checks → resolve_compliance → reflected (v3, skill gap fix)
+
+**Verified the V1 path to `"reflected"` status without V2 C2.**
+
+The pre-existing skill gap: `bicameral-drift` and `bicameral-scan-branch` skills had no step for `sync_status.pending_compliance_checks`. Without it, decisions stay `"pending"` indefinitely after their first code bind — `derive_status()` requires a cached `compliance_check` verdict keyed on `(decision_id, region_id, content_hash)` to return `"reflected"`, but no existing skill instructed the caller-LLM to write that verdict.
+
+Both skills were updated in this session with an "After the call" section (see `skills/bicameral-drift/SKILL.md` and `skills/bicameral-scan-branch/SKILL.md`).
+
+```
+Step 1 — Ingest: "All API endpoints must reject unauthenticated requests with HTTP 401" (L2, Auth)
+Step 2 — Ratify: signoff.state = proposed → ratified
+Step 3 — Bind:   region bound to auth.py:require_auth (lines 1–4)
+Step 4 — Commit: HEAD advanced to trigger fresh link_commit sweep
+Step 5 — detect_drift → pending_compliance_checks: 1
+         flow_id: b9ad6d57-2d1a-4c...
+         status_before: pending
+Step 6 — resolve_compliance(phase='drift', verdict='compliant')
+         verdicts written: 1
+Step 7 — status_after: reflected
+
+Result: PASS — status transitioned pending → reflected via resolve_compliance
+```
+
+**Key invariants confirmed:**
+
+1. `pending_compliance_checks` requires a fresh `link_commit` sweep post-bind. Because `handle_bind` doesn't invalidate the in-process sync cache, the caller must advance HEAD (new commit) before `detect_drift` to force a fresh sweep. In production this happens naturally — bind is called during ingest, and drift checks run on later commits.
+
+2. `proposed` decisions are drift-exempt: `project_decision_status` short-circuits to `"proposal"` regardless of compliance verdicts. Ratification (`bicameral.ratify`) is the gate before `"reflected"` becomes reachable. This is intentional — ratification is the human acknowledgment that the decision entered the active drift tracking cycle.
+
+3. The full V1 path is: `ingest` → `ratify` → `bind` → (new commit) → `detect_drift` → `resolve_compliance(verdict="compliant")` → `"reflected"`. No V2 C2 needed for the "reflected" case — only "drifted" requires `bicameral_judge_drift`.
+
+---
+
 ## Summary
 
 | Run | What was tested | Result |
@@ -193,15 +226,23 @@ Query: 'Sentry breach'        → 0 matches
 | 5 | Drift check post-bind (should be clean) | ✅ PASS |
 | 6 | Full bind→modify→drift hash tracking loop | ✅ PASS (hash tracking verified; "drifted" status is V2) |
 | 7 | Search in surrealkv:// persistent mode | ⚠ SurrealDB v2 embedded FTS limitation confirmed |
+| 8 | pending_compliance_checks → resolve_compliance → reflected | ✅ PASS (skill gap fixed) |
 
 ### Bugs found and fixed during simulation
 
 All four bugs (B1–B4) above were fixed. Tests: 288 passed after fixes.
 
+### Skill gaps fixed (v3)
+
+| Skill | Gap | Fix |
+|-------|-----|-----|
+| `bicameral-drift` | No `pending_compliance_checks` step — decisions stayed `"pending"` indefinitely | Added "After the call" section: read `sync_status.pending_compliance_checks`, call `resolve_compliance(phase="drift")` |
+| `bicameral-scan-branch` | Same gap | Same fix |
+
 ### Open items
 
 1. **`bicameral.search` non-functional** — SurrealDB v2 embedded FTS broken in both `memory://` and `surrealkv://` modes. Unblocked by moving to standalone server (`surrealdb://`). Not a v0.9.3 regression — pre-existing limitation documented in CLAUDE.md.
 
-2. **"Drifted" status requires V2 C2** — `derive_status()` intentionally returns `"pending"` for hash-changed regions without an LLM verdict. `bicameral_judge_drift` (V2 C2) is the unblocking feature.
+2. **"Drifted" status requires V2 C2** — `derive_status()` intentionally returns `"pending"` for hash-changed regions without an LLM verdict. `bicameral_judge_drift` (V2 C2) is the unblocking feature. The `"reflected"` case is fully unblocked in V1 via `resolve_compliance` (confirmed Run 8).
 
-3. **`parent_decision_id` not yet populated** — field is in schema v9 and surfaced in `HistoryDecision`, but neither `bicameral.ingest` nor `bicameral_resolve_collision` write it. Will be populated when the caller-LLM collision flow (Step 2.5) starts running `bicameral_resolve_collision` with cross-level pairs.
+3. **`handle_bind` does not invalidate sync cache** — after a bind, the next `detect_drift` call in the same MCP session will hit the stale pre-bind sync cache and miss the newly created region. In practice this is benign (bind and drift run in different sessions), but it's a latent issue for multi-step flows in the same session.

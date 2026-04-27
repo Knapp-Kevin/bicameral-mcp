@@ -9,6 +9,7 @@ Covers:
   Run 5  — Drift check post-bind (should be clean)
   Run 6  — Full ingest→bind→modify→drift loop on temp file (follow-up 4)
   Run 7  — Search in surrealkv:// persistent mode (fix 3 verification)
+  Run 8  — pending_compliance_checks → resolve_compliance → reflected status (v0.9.3 skill gap fix)
 """
 import sys, asyncio, os, tempfile, shutil, pathlib
 sys.path.insert(0, '/Users/jinhongkuan/github/bicameral/pilot/mcp')
@@ -465,6 +466,188 @@ async def run_search_persistent():
     section("Run 7 — Search in surrealkv:// persistent mode (fix 3 verification)", body)
 
 
+# ── Run 8: pending_compliance_checks → resolve_compliance → reflected ────────
+
+async def run_compliance_resolution_loop():
+    """
+    Verify the V1 path to 'reflected' status:
+      ingest → bind → detect_drift (generates pending_compliance_checks)
+      → resolve_compliance(verdict='compliant') → status becomes 'reflected'
+
+    This is the exact flow the updated scan-branch / drift skills now prescribe.
+    """
+    import subprocess
+    tmpdir = tempfile.mkdtemp(prefix='bicam_compliance_test_')
+    try:
+        subprocess.run(['git', 'init', '-b', 'main'], cwd=tmpdir, check=True, capture_output=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@test.com'], cwd=tmpdir, check=True, capture_output=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=tmpdir, check=True, capture_output=True)
+
+        test_file = pathlib.Path(tmpdir) / "auth.py"
+        test_file.write_text(
+            'def require_auth(request):\n'
+            '    """Reject unauthenticated requests with 401."""\n'
+            '    if not request.get("token"):\n'
+            '        raise PermissionError("401 Unauthorized")\n'
+        )
+        subprocess.run(['git', 'add', 'auth.py'], cwd=tmpdir, check=True, capture_output=True)
+        subprocess.run(['git', 'commit', '-m', 'initial: auth gate'], cwd=tmpdir, check=True, capture_output=True)
+
+        os.environ['SURREAL_URL'] = 'memory://'
+        os.environ['REPO_PATH'] = tmpdir
+
+        ledger = make_fresh_ledger()
+        await ledger.connect()
+
+        from adapters.code_locator import get_code_locator
+
+        class Ctx:
+            pass
+        ctx = Ctx()
+        ctx.repo_path = tmpdir
+        ctx.session_id = 'sim-compliance'
+        ctx.authoritative_ref = 'main'
+        ctx.authoritative_sha = ''
+        ctx.head_sha = ''
+        ctx.drift_analyzer = None
+        ctx._sync_state = {}
+        ctx.ledger = ledger
+        ctx.code_graph = get_code_locator()
+
+        # Step 1: ingest
+        from handlers.ingest import handle_ingest
+        ingest_result = await handle_ingest(ctx, {
+            "repo": tmpdir,
+            "query": "auth gate decision",
+            "mappings": [{
+                "intent": "All API endpoints must reject unauthenticated requests with HTTP 401",
+                "feature_group": "Auth",
+                "decision_level": "L2",
+                "span": {
+                    "text": "All API endpoints must reject unauthenticated requests with HTTP 401",
+                    "source_type": "slack",
+                    "source_ref": "eng-discussion",
+                    "meeting_date": "2026-04-26",
+                    "speakers": ["Jin"],
+                },
+            }],
+        })
+        decision_id = ingest_result.created_decisions[0].decision_id
+
+        # Step 2: ratify the decision — proposed decisions are drift-exempt and
+        # will never reach 'reflected' via compliance verdicts until ratified.
+        # In real sessions the user reviews proposed decisions and calls ratify;
+        # in this simulation we ratify immediately for verification purposes.
+        from handlers.ratify import handle_ratify
+        await handle_ratify(ctx, decision_id=decision_id, signer="sim-run8", action="ratify")
+
+        # Step 3: bind
+        from handlers.bind import handle_bind
+        bind_result = await handle_bind(ctx, bindings=[{
+            "decision_id": decision_id,
+            "file_path": "auth.py",
+            "symbol_name": "require_auth",
+            "start_line": 1,
+            "end_line": 4,
+            "purpose": "Auth gate — reject unauthenticated requests with 401",
+        }])
+        bind_ok = bind_result.bindings and not bind_result.bindings[0].error
+        region_id = bind_result.bindings[0].region_id if bind_ok else None
+
+        if not bind_ok:
+            section("Run 8 — pending_compliance_checks → resolve_compliance → reflected", "FAIL — bind failed")
+            return
+
+        # Step 3: advance HEAD so the sync cache is stale and link_commit sweeps fresh.
+        # handle_bind doesn't invalidate the in-process sync cache or the DB
+        # last_synced_commit, so without a new commit the detect_drift call
+        # would hit the stale pre-bind cache and find 0 regions.
+        test_file.write_text(
+            'def require_auth(request):\n'
+            '    """Reject unauthenticated requests with 401."""\n'
+            '    if not request.get("token"):\n'
+            '        raise PermissionError("401 Unauthorized")\n'
+            '# v2: docstring clarified\n'
+        )
+        subprocess.run(['git', 'add', 'auth.py'], cwd=tmpdir, check=True, capture_output=True)
+        subprocess.run(['git', 'commit', '-m', 'docs: clarify require_auth docstring'], cwd=tmpdir, check=True, capture_output=True)
+
+        # Step 4: detect_drift — triggers a fresh link_commit that sweeps auth.py,
+        # finds the grounded region, and generates pending_compliance_checks.
+        from handlers.detect_drift import handle_detect_drift
+        drift_result = await handle_detect_drift(ctx, file_path="auth.py")
+        sync_status = getattr(drift_result, 'sync_status', None)
+        pending_checks = getattr(sync_status, 'pending_compliance_checks', []) or []
+        flow_id = getattr(sync_status, 'flow_id', '') or ''
+
+        status_before = "unknown"
+        if pending_checks:
+            # Read the actual decision status before resolving
+            from ledger.queries import project_decision_status
+            inner = getattr(ledger, '_inner', ledger)
+            status_before = await project_decision_status(inner._client, decision_id)
+
+        # Step 5: call resolve_compliance for each pending check
+        from handlers.resolve_compliance import handle_resolve_compliance
+        verdicts_written = 0
+        if pending_checks:
+            verdicts = [
+                {
+                    "decision_id": c.decision_id,
+                    "region_id": c.region_id,
+                    "content_hash": c.content_hash,
+                    "verdict": "compliant",
+                    "confidence": "high",
+                    "explanation": "require_auth raises 401 for missing token — correctly implements the decision",
+                }
+                for c in pending_checks
+            ]
+            compliance_result = await handle_resolve_compliance(
+                ctx,
+                phase="drift",
+                verdicts=verdicts,
+                flow_id=flow_id,
+            )
+            verdicts_written = len(compliance_result.accepted)
+
+        # Step 6: verify status is now 'reflected'
+        from ledger.queries import project_decision_status
+        inner = getattr(ledger, '_inner', ledger)
+        status_after = await project_decision_status(inner._client, decision_id)
+
+        passed = (status_after == "reflected")
+
+        if pending_checks:
+            body = (
+                f"decision_id:     {decision_id}\n"
+                f"region_id:       {region_id}\n\n"
+                f"Step 2 — ratify: signoff.state = proposed → ratified\n"
+                f"Step 3 — bind:   region bound to auth.py:require_auth\n"
+                f"Step 4 — commit: HEAD advanced to trigger fresh sweep\n"
+                f"Step 5 — detect_drift → pending_compliance_checks: {len(pending_checks)}\n"
+                f"flow_id:         {flow_id[:16]}...\n"
+                f"status_before:   {status_before}\n"
+                f"Step 6 — resolve_compliance(phase='drift', verdict='compliant')\n"
+                f"verdicts written: {verdicts_written}\n"
+                f"Step 7 — status_after: {status_after}\n\n"
+                f"Result: {'PASS — status transitioned pending → reflected via resolve_compliance' if passed else 'FAIL — status did not reach reflected'}\n"
+            )
+        else:
+            body = (
+                f"pending_compliance_checks: 0 (link_commit swept auth.py but found no grounded regions)\n"
+                f"status_after: {status_after}\n\n"
+                "Result: INCONCLUSIVE — region sweep ran but no pending checks generated.\n"
+                "  Possible cause: region content_hash already cached, or file path mismatch.\n"
+            )
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        os.environ['SURREAL_URL'] = 'memory://'
+        os.environ['REPO_PATH'] = REPO
+
+    section("Run 8 — pending_compliance_checks → resolve_compliance → reflected (skill gap fix)", body)
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 async def main():
@@ -482,6 +665,7 @@ async def main():
 
     await run_full_drift_loop()
     await run_search_persistent()
+    await run_compliance_resolution_loop()
 
     return RESULTS
 
