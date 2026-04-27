@@ -622,7 +622,7 @@ AskUserQuestion({
 
 Handle the response:
 - Options (a)/(b)/(c) naming a business driver → re-ingest as `proposed` with the named driver appended to the description. Call `bicameral.ratify` if the user also confirms.
-- "Engineering hygiene only — drop it" → call `bicameral.update` to set `signoff.state = "rejected"`. Do not ratify.
+- "Engineering hygiene only — drop it" → call `bicameral.ratify` with `action="reject"` to record an explicit rejection. Do not ratify.
 - User selects "Other" and types "leave for now" / similar → the decision stays `context_pending` and surfaces at the next preflight.
 
 ### 5. Present the auto-fired brief (v0.4.8+)

@@ -177,6 +177,16 @@ async def handle_update(action: str, current_version: str, repo_path: str = "") 
                     if skills_updated
                     else ""
                 )
+                migration_warning = (
+                    "\n\n"
+                    "⚠️  MIGRATION WARNING — READ BEFORE RESTARTING\n"
+                    "If the server fails to start after this upgrade (schema migration required),\n"
+                    "the ledger database at ~/.bicameral/ledger.db WILL BE CLEARED.\n"
+                    "Your source data (event logs at <repo>/.bicameral/events/) is NEVER deleted —\n"
+                    "the ledger is always rebuildable from events.\n"
+                    "To clear manually: call bicameral.reset or delete ~/.bicameral/ledger.db.\n"
+                    "The server will auto-rebuild the ledger from your event logs on next start."
+                )
                 return {
                     "status": "upgraded",
                     "from_version": current_version,
@@ -184,7 +194,7 @@ async def handle_update(action: str, current_version: str, repo_path: str = "") 
                     "skills_updated": skills_updated,
                     "message": (
                         f"Upgraded to v{recommended}.{skills_note} "
-                        "Restart the MCP server to use the new version."
+                        f"Restart the MCP server to use the new version.{migration_warning}"
                     ),
                 }
             else:
