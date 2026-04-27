@@ -20,13 +20,48 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "phase1: requires RealCodeLocatorAdapter")
     config.addinivalue_line("markers", "phase2: requires SurrealDBLedgerAdapter + SurrealDB")
     config.addinivalue_line("markers", "phase3: full E2E — requires both Phase 1 + Phase 2")
+    config.addinivalue_line("markers", "alpha_flow: Jacob North Star regression suite — v0.7 gate")
+    config.addinivalue_line("markers", "bench: drift benchmark harness (V1 A1) — skipped by default, run with -m bench")
+
+
+@pytest.fixture(autouse=True)
+def _default_authoritative_ref_to_current_branch(monkeypatch):
+    """v0.4.6 pollution guard default: treat whatever branch the test
+    runner is on as authoritative.
+
+    The branch-name pollution guard in `ingest_commit` refuses baseline
+    writes when the current branch != authoritative_ref. Pre-existing
+    tests were written before the guard and expect normal write behavior
+    regardless of which branch the test runner happens to be on (e.g.
+    the bicameral submodule checked out on `chore/bump-v0.4.6`). This
+    fixture sets BICAMERAL_AUTHORITATIVE_REF to the current branch so
+    those tests keep passing.
+
+    Tests that care about the pollution guard (``test_pollution_bug.py``)
+    explicitly ``monkeypatch.delenv("BICAMERAL_AUTHORITATIVE_REF")`` at
+    the start of the test, which unsets this default for that test only.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        current_branch = result.stdout.strip() if result.returncode == 0 else ""
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        current_branch = ""
+    if current_branch and current_branch != "HEAD":
+        monkeypatch.setenv("BICAMERAL_AUTHORITATIVE_REF", current_branch)
 
 
 
 @pytest.fixture
 def repo_path() -> str:
-    """Repo root. Defaults to the bicameral repo itself for Phase 1+ tests."""
-    return os.getenv("REPO_PATH", str(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))))
+    """Repo root. Defaults to the MCP repo itself for Phase 1+ tests."""
+    return os.getenv("REPO_PATH", str(os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))))
 
 
 @pytest.fixture
@@ -81,7 +116,7 @@ def minimal_payload() -> dict:
                 "symbols": ["test_function"],
                 "code_regions": [
                     {
-                        "file_path": "pilot/mcp/server.py",
+                        "file_path": "server.py",
                         "symbol": "test_function",
                         "type": "function",
                         "start_line": 1,

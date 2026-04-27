@@ -173,22 +173,34 @@ def compute_content_hash(
 def derive_status(
     stored_hash: str,
     actual_hash: str | None,
+    cached_verdict: dict | None = None,
 ) -> str:
-    """Derive intent status from hash comparison.
+    """Derive intent status from hash state + optional LLM compliance verdict.
 
-    - actual_hash is None → symbol absent at this ref → 'pending'
-    - stored_hash is empty → never been indexed → 'ungrounded'
-    - actual_hash == stored_hash → code unchanged → 'reflected' (or last set status)
-    - actual_hash != stored_hash → code changed since baseline → 'drifted'
+    Cache-aware semantics (post-v3 schema; plan: 2026-04-20-ingest-time-verification):
 
-    Note: 'reflected' vs 'drifted' from hash alone is best-effort.
-    Phase 3 will add an LLM drift judge for semantic comparison.
+    - ``stored_hash`` empty            → ``ungrounded`` (never indexed)
+    - ``actual_hash`` is ``None``      → ``pending`` (symbol absent at ref)
+    - ``cached_verdict`` is ``None``   → ``pending`` (code exists, no verified
+                                         judgment for this content shape)
+    - ``cached_verdict['verdict'] == 'compliant'``  → ``reflected``
+    - otherwise                        → ``drifted`` (verdict says code does
+                                         not implement the decision)
+
+    Callers that haven't been refactored to look up the ``compliance_check``
+    cache pass ``cached_verdict=None`` and see ``pending`` where they
+    previously saw ``reflected`` / ``drifted``. That is intentional: under
+    the new plan, REFLECTED status MUST be earned by a caller-LLM verdict.
+    ``adapter.ingest_commit`` (the drift-sweep site) looks up the cache
+    via ``get_compliance_verdict(...)`` and passes the result here.
     """
     if not stored_hash:
         return "ungrounded"
     if actual_hash is None:
         return "pending"
-    if actual_hash == stored_hash:
+    if cached_verdict is None:
+        return "pending"
+    if cached_verdict.get("verdict") == "compliant":
         return "reflected"
     return "drifted"
 
@@ -212,11 +224,69 @@ def get_changed_files(commit_hash: str, repo_path: str) -> list[str]:
         return []
 
 
-def resolve_head(repo_path: str) -> str | None:
-    """Return current HEAD SHA."""
+def get_changed_files_in_range(
+    base_sha: str,
+    head_sha: str,
+    repo_path: str,
+) -> list[str] | None:
+    """Return files touched between ``base_sha`` and ``head_sha``.
+
+    v0.4.11 (latent drift fix): when ``link_commit`` runs after a gap of
+    multiple commits since the last sync, sweeping only ``HEAD --name-only``
+    misses every file drifted by intermediate commits. This helper runs
+    ``git diff --name-only base..head`` to enumerate the full set of files
+    touched across the gap, so the drift sweep covers everything that
+    needs re-checking.
+
+    Returns:
+        - ``list[str]`` of changed file paths (possibly empty when the
+          two refs touch no different files)
+        - ``None`` when the diff failed (force-push, shallow clone,
+          unreachable base SHA, etc.) — caller should fall back to
+          ``get_changed_files(head_sha, repo_path)`` for head-only scope.
+
+    The ``None`` sentinel matters: empty list means "ran successfully,
+    no files differ" while ``None`` means "the range is unreachable."
+    """
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "diff", "--name-only", f"{base_sha}..{head_sha}"],
+            cwd=Path(repo_path).resolve(),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "[status] git diff %s..%s failed: %s",
+                base_sha[:8], head_sha[:8], result.stderr[:200],
+            )
+            return None
+        return [f.strip() for f in result.stdout.strip().splitlines() if f.strip()]
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.warning("[status] git diff range error: %s", e)
+        return None
+
+
+def resolve_head(repo_path: str) -> str | None:
+    """Return current HEAD SHA."""
+    return resolve_ref("HEAD", repo_path)
+
+
+def resolve_ref(ref: str, repo_path: str) -> str | None:
+    """Return the full SHA for a git ref (HEAD, branch, tag, or short SHA).
+
+    Returns ``None`` when the ref is unreachable (force-pushed branch
+    gone, detached tag removed, shallow clone that doesn't include
+    the base). Callers must treat ``None`` as "ran, unresolvable" —
+    distinct from returning an SHA that happens to match something
+    stale.
+    """
+    if not ref:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
             cwd=Path(repo_path).resolve(),
             capture_output=True,
             text=True,

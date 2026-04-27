@@ -1,3 +1,10 @@
+```
+  ▸ BICAMERAL
+  ┌───────────────────────────────────────────────┐
+  │  what your team decided  ↔  what the AI built │
+  └───────────────────────────────────────────────┘
+```
+
 # Bicameral MCP
 
 [![PyPI version](https://img.shields.io/pypi/v/bicameral-mcp)](https://pypi.org/project/bicameral-mcp/)
@@ -5,535 +12,312 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://img.shields.io/github/actions/workflow/status/BicameralAI/bicameral-mcp/test-mcp-regression.yml?branch=main&label=tests)](https://github.com/BicameralAI/bicameral-mcp/actions)
 
-**A provenance-aware decision layer for your codebase** -- paste a transcript, get a living map of what was decided and what was actually built.
+Bicameral eliminates redundant rework in the software development lifecycle (SDLC) by building the *compliance layer* between product decisions and code output.
 
-Bicameral MCP is a local-first [Model Context Protocol](https://spec.modelcontextprotocol.io/) server that ingests meeting transcripts, PRDs, and design documents, builds a structured graph of decisions mapped to code symbols, and continuously tracks whether those decisions are reflected, drifting, or lost as the codebase evolves. No data leaves your machine. No LLM required -- all retrieval is deterministic. No API keys needed.
-
----
-
-## Table of Contents
-
-- [The Problem](#the-problem)
-- [How It Works](#how-it-works)
-- [Architecture](#architecture)
-- [Quickstart](#quickstart)
-- [MCP Tools Reference](#mcp-tools-reference)
-- [Tool Composition](#tool-composition)
-- [Testing](#testing)
-- [Collaboration Modes](#collaboration-modes)
-- [Configuration](#configuration)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
+Bicameral is a local-first [MCP server](https://spec.modelcontextprotocol.io/) that ingests your meeting transcripts, PRDs, and Slack threads, maps every decision to the code that implements it, and automatically surfaces alignment gaps — before they become bugs.
 
 ---
 
 ## The Problem
 
-Every software team makes hundreds of verbal decisions per week -- in meetings, PRDs, Slack threads, and huddles. None of those decisions are linked to the code that implements them. This disconnect creates five specific SDLC friction points:
+Engineering teams make hundreds of product decisions per week. A tiny fraction end up in tickets. None are linked to the code that implements them.
 
-| # | Smell | What Happens | Bicameral Fix |
-|---|-------|-------------|---------------|
-| 1 | **CONSTRAINT_LOST** | A rate limit or compliance rule surfaces mid-sprint instead of at design time | `bicameral.search` -- pre-flight context before coding |
-| 2 | **CONTEXT_SCATTERED** | The "why" behind a decision is split across Slack, Notion, and someone's memory | `bicameral.ingest` -- normalizes intent from any source into a unified graph |
-| 3 | **DECISION_UNDOCUMENTED** | A verbal "let's do X" never lands in a ticket or ADR | `bicameral.status` -- tracks what was decided vs. what was built |
-| 4 | **REPEATED_EXPLANATION** | Same context tax paid twice -- once to design, once to engineering | `bicameral.search` -- retrieves full decision provenance on demand |
-| 5 | **TRIBAL_KNOWLEDGE** | Only one person knows why the system works the way it does | `bicameral.drift` -- surfaces institutional memory tied to code |
+When you build with an AI coding assistant, this disconnect accelerates:
 
-Bicameral's core value is **drift detection** -- knowing that a decision made three weeks ago is now inconsistent with what actually shipped, or that a decision made today is inconsistent with the codebase reality.
+- The agent has no memory of the sprint planning where you decided on the rate limit
+- It implements checkout without knowing the compliance rule from last week's Slack thread
+- By the time someone notices, the gap has compounded across three PRs
+
+**Bicameral solves spec-alignment friction.** It acts as a persistent, auditable memory layer between your product decisions and your codebase — so your AI agent always has the right context before writing a line of code.
+
+```
+  meeting transcript       PRD / Slack thread       inline answer
+         │                        │                       │
+         └────────────────────────┼───────────────────────┘
+                                  ▼
+                          bicameral.ingest
+                                  │
+                    ┌─────────────▼──────────────┐
+                    │       Decision Ledger        │
+                    │   what was said  ↔  code    │
+                    │  status: reflected | drifted │
+                    │          | gap | ungrounded  │
+                    └─────────────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+       preflight fires      dashboard shows      drift detected
+     before you code        full picture        at review time
+```
 
 ---
 
-## How It Works
+## How It Feels
 
-### Status Derivation Model
-
-Decision status is a **pure function** computed at query time -- never stored. This is the key differentiator: because status is derived from `(intent, git_ref)`, Bicameral is immune to rebase, squash, and cherry-pick. There is no stale state to reconcile.
-
-| Condition | Status | Meaning |
-|-----------|--------|---------|
-| No `code_region` mapped | **ungrounded** | Intent captured, but no matching code found |
-| Symbol absent at git ref | **pending** | Code not yet written |
-| `content_hash` differs | **drifted** | Code changed since the decision was recorded |
-| `content_hash` matches | **reflected** | Code matches intent |
-
-### Auto-Grounding
-
-When decisions are ingested, Bicameral automatically attempts to anchor them to code:
-
-1. **BM25 file-level search** -- ranks candidate files by textual relevance to the decision description
-2. **Symbol expansion** -- extracts all symbols from top-ranked files via tree-sitter
-3. **Fuzzy token matching** -- matches decision terminology against the symbol index using rapidfuzz
-
-This is a deterministic, two-stage retrieval pipeline. No embeddings, no LLM calls.
-
----
-
-## Architecture
-
-Bicameral is composed of three layers:
-
-<details>
-<summary><strong>Layer diagram and data flow</strong></summary>
+**Before implementing a feature**, your agent runs `bicameral.preflight` and surfaces:
 
 ```
-                        MCP Client (Claude Code, etc.)
-                                    |
-                              stdio transport
-                                    |
-                    +-------------------------------+
-                    |        MCP Server Layer        |
-                    |          (server.py)           |
-                    |   9 tools, stdio transport,    |
-                    |   Pydantic response contracts  |
-                    +-------+---------------+-------+
-                            |               |
-              +-------------+               +-------------+
-              |                                           |
-   +----------v-----------+                 +-------------v-----------+
-   |   Decision Ledger    |                 |      Code Locator       |
-   |      (ledger/)       |                 |    (code_locator/)      |
-   |                      |                 |                         |
-   |  SurrealDB embedded  |                 |  tree-sitter parsing    |
-   |  Graph: intent -->   |                 |  BM25 text search       |
-   |    maps_to -->       |                 |  RRF fusion ranking     |
-   |    symbol -->        |                 |  Structural graph       |
-   |    implements -->    |                 |  traversal              |
-   |    code_region       |                 |                         |
-   +----------------------+                 +-------------------------+
+(bicameral surfaced — checking Stripe webhook context)
+
+📌 3 prior decisions in scope:
+  ✓ Idempotency via Redis SETNX with 24h TTL
+    src/middleware/idempotency.ts:checkIdempotencyKey:42-67
+    Source: Sprint 14 planning · Ian, 2026-03-12
+
+  ⚠ DRIFTED: Trust Stripe event.created, not server time
+    src/handlers/webhook.ts:processEvent:80-92
+    Drift evidence: switched to Date.now() in PR #287
+
+⚠ 1 unresolved open question:
+  • "Should we deduplicate by event.id or (account_id, event.id)?"
+    Source: Slack #payments 2026-03-20
 ```
 
-**Data flow:**
+**At any time**, the dashboard gives you the full picture:
 
-| Operation | Flow |
-|-----------|------|
-| **Ingest** | Transcript/PRD --> `bicameral.ingest` --> SurrealDB graph (intents, symbols, code_regions, edges) |
-| **Sync** | Code change --> `bicameral.link_commit` --> content hash update, drift re-evaluation |
-| **Query** | `bicameral.status` / `drift` / `search` --> derives status from `(intent, git_ref)` at query time |
-
-**Supported languages** (tree-sitter grammars): Python, JavaScript, JSX, TypeScript, TSX, Java, Go, Rust, C#
-
-</details>
-
-### Core Technologies
-
-| Component | Technology | Role |
-|-----------|-----------|------|
-| Decision store | SurrealDB v2 (embedded, in-process) | Graph storage for intents, symbols, code regions, and edges |
-| Symbol extraction | tree-sitter (9 language grammars) | AST-level function/class extraction |
-| Text search | BM25 via bm25s | File and symbol ranking |
-| Fuzzy matching | rapidfuzz | Token-level matching for auto-grounding |
-| Response types | Pydantic v2 | Strict MCP response contracts |
-| Transport | MCP protocol (stdio) | IDE/agent integration |
+![Bicameral Dashboard](assets/dashboard-preview.png)
 
 ---
 
 ## Quickstart
-
-### One-command setup
 
 ```bash
 pipx install bicameral-mcp
 bicameral-mcp setup
 ```
 
-This launches an interactive wizard that:
-1. Detects your repo (from cwd or prompts you)
-2. Installs the MCP config into Claude Code using your `pipx` binary path
+The setup wizard detects your repo, installs the MCP server config into Claude Code, adds a git hook that automatically syncs the ledger after every commit, and adds a session-end hook that captures any design decisions you stated mid-session but didn't explicitly ingest. Restart Claude Code and you're done.
 
-That's it. The server builds its code index on first tool call.
-
-### Manual config
-
-Run from your repo root:
-
-```bash
-# Install
-pipx install bicameral-mcp
-
-# Add to Claude Code
-claude mcp add-json bicameral --scope local '{
-  "command": "bicameral-mcp",
-  "args": [],
-  "env": {
-    "REPO_PATH": "/path/to/your/repo",
-    "SURREAL_URL": "surrealkv:///path/to/your/repo/.bicameral/ledger.db"
-  }
-}'
-```
-
-### Local development
-
-```bash
-# Option A: pipx editable install (puts bicameral-mcp on PATH, uses local source)
-pipx install -e . --force
-
-# Option B: pip editable install (venv-local, includes test deps)
-pip install -e ".[test]"
-```
-
-After either option:
-
-```bash
-bicameral-mcp setup           # interactive config
-bicameral-mcp --smoke-test    # verify all 9 tools register correctly
-bicameral-mcp                 # start MCP server (stdio)
-```
-
-### Verify installation
+Verify it works:
 
 ```bash
 bicameral-mcp --smoke-test
 ```
 
-Expected output:
-```
-bicameral-mcp 0.2.13 smoke test passed
-bicameral.status
-bicameral.search
-bicameral.drift
-bicameral.link_commit
-bicameral.ingest
-validate_symbols
-search_code
-get_neighbors
-extract_symbols
+### Don't have pipx?
+
+**macOS**
+```bash
+brew install pipx
+pipx ensurepath
 ```
 
-No LLM provider credentials needed -- all retrieval is deterministic.
+**Linux**
+```bash
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+```
+
+**Windows**
+```powershell
+python -m pip install --user pipx
+python -m pipx ensurepath
+```
+
+Then restart your terminal and re-run the install command above.
+
+---
+
+## Core Concepts
+
+### Decision Status
+
+Every tracked decision has a status derived at query time — never stored. This makes Bicameral immune to rebase, squash, and cherry-pick.
+
+| Status | Meaning |
+|---|---|
+| **reflected** ✓ | Code was verified to implement this decision |
+| **drifted** ⚠ | Code changed since the decision was last verified |
+| **ungrounded** ○ | Decision tracked, but no matching code region found |
+| **pending** | Code region found, but not yet verified by the agent |
+| **gap** ◈ | Open question — a known unknown that needs an answer before the code can be correct |
+| **superseded** — | Replaced by a later decision |
+
+### When Does `link_commit` Run?
+
+`link_commit` syncs a commit's changes into the ledger — it recomputes content hashes and re-evaluates drift for every bound decision.
+
+It fires automatically in three ways:
+
+1. **After every `bicameral.ingest`** — auto-chained by the server
+2. **After git commits/merges/pulls** — via the PostToolUse hook installed by `setup`
+3. **Before every `bicameral.preflight`** — lazy catch-up if HEAD has advanced since the last sync
+
+If you commit outside of Claude Code (e.g., from a terminal), the next preflight call will sync the ledger before surfacing context.
+
+### Collaboration Modes
+
+| | Solo (default) | Team |
+|---|---|---|
+| **Who** | Individual eval or single-dev use | Any mix of devs, PMs, designers |
+| **Storage** | Local only (gitignored) | Local DB + git-committed event files |
+| **Sharing** | Nothing shared | Normal `git push`/`git pull` |
+| **Merge conflicts** | N/A | Zero — per-user append-only files |
+
+In **team mode**, a PM ingests a PRD; when a dev pulls, `preflight` surfaces those decisions as coding context and the dashboard shows what still needs implementation.
+
+```
+.bicameral/
+├── events/                ← committed to git (shared decisions)
+│   ├── pm@co.com.jsonl    ← PM's ingested PRDs and transcripts
+│   └── dev@co.com.jsonl   ← developer's commit syncs
+├── config.yaml            ← committed (mode, guided flag)
+└── local/                 ← gitignored (materialized state, DB)
+```
+
+---
+
+## What `setup` Installs
+
+Running `bicameral-mcp setup` writes these files to your repo:
+
+| File | What it is | Required? |
+|---|---|---|
+| `.mcp.json` | MCP server config for Claude Code | Yes — registers the server |
+| `.bicameral/config.yaml` | Collaboration mode (`solo`/`team`) and guided-mode flag | Yes — stores your preferences |
+| `.bicameral/ledger.db` | SurrealDB decision ledger (solo mode) | Auto-created on first tool call |
+| `.gitignore` entry | Ignores `.bicameral/` in solo mode | Recommended |
+| `.claude/settings.json` | PostToolUse hook: auto-calls `bicameral.link_commit` after git commits | Optional — improves sync |
+| `.claude/settings.json` | SessionEnd hook: runs `bicameral-capture-corrections` to catch uningested mid-session decisions | Optional — closes correction capture gap |
+| `.claude/skills/bicameral-*/SKILL.md` | Slash commands (`/bicameral:ingest`, `/bicameral:preflight`, `/bicameral:capture-corrections`, etc.) | Recommended |
+
+### Removing Bicameral
+
+To fully uninstall from a repo:
+
+```bash
+# 1. Remove the MCP server
+claude mcp remove bicameral --scope project
+
+# 2. Remove data and config
+rm -rf .bicameral/
+
+# 3. Remove skills
+rm -rf .claude/skills/bicameral-*/
+
+# 4. Remove the git hook (if installed)
+#    Open .claude/settings.json and delete the PostToolUse entry
+#    with "bicameral" in the command field.
+
+# 5. Remove the .gitignore entry
+#    Delete the "# Bicameral MCP" block from .gitignore.
+```
+
+---
+
+## Slash Commands
+
+After setup, Claude Code gets these slash commands:
+
+| Command | When to use |
+|---|---|
+| `/bicameral:ingest` | Paste a transcript, PRD, or Slack thread to track its decisions |
+| `/bicameral:preflight` | Surface relevant decisions and drift before implementing |
+| `/bicameral:history` | See all tracked decisions grouped by feature area |
+| `/bicameral:dashboard` | Open the live decision dashboard in your browser |
+| `/bicameral:reset` | Wipe and replay the ledger (emergency use) |
+
+The agent also fires these automatically — `preflight` before any code change, `ingest` when you paste a document.
 
 ---
 
 ## MCP Tools Reference
 
-### Ledger Tools (5)
-
-| Tool | Purpose |
-|------|---------|
-| `bicameral.status` | Surface implementation status of all tracked decisions (reflected / drifted / pending / ungrounded) |
-| `bicameral.search` | Pre-flight: find past decisions relevant to a feature before writing code. Auto-syncs to HEAD. |
-| `bicameral.drift` | Code review: surface decisions that touch symbols in a file, flagging divergence |
-| `bicameral.link_commit` | Sync a commit into the ledger -- updates content hashes, re-evaluates drift. Idempotent. |
-| `bicameral.ingest` | Ingest a normalized source payload (transcript, PRD, Slack export) and advance the source cursor |
-
-### Code Locator Tools (4)
-
-| Tool | Purpose |
-|------|---------|
-| `validate_symbols` | Fuzzy-match candidate symbol names against the code index. Returns confidence scores and symbol IDs. |
-| `search_code` | BM25 text search + structural graph traversal with RRF fusion. Optionally seed with symbol IDs. |
-| `get_neighbors` | 1-hop structural graph traversal around a symbol (callers, callees, imports, inheritance). |
-| `extract_symbols` | Tree-sitter symbol extraction from a source file. No index required. |
-
 <details>
-<summary><strong>Full tool input schemas</strong></summary>
+<summary><strong>13 tools across three categories</strong></summary>
 
-#### bicameral.status
+### Decision Ledger
 
-```json
-{
-  "type": "object",
-  "properties": {
-    "filter": {
-      "type": "string",
-      "enum": ["all", "drifted", "pending", "reflected", "ungrounded"],
-      "default": "all",
-      "description": "Filter decisions by status"
-    },
-    "since": {
-      "type": "string",
-      "description": "ISO date — only decisions ingested after this date"
-    },
-    "ref": {
-      "type": "string",
-      "default": "HEAD",
-      "description": "Git ref to evaluate against"
-    }
-  }
-}
-```
+| Tool | Purpose |
+|---|---|
+| `bicameral.ingest` | Ingest a transcript, PRD, or Slack export into the ledger |
+| `bicameral.preflight` | Pre-flight: surface prior decisions and drift before coding |
+| `bicameral.search` | Search past decisions by topic |
+| `bicameral.brief` | Full brief for a feature area (decisions, drift, divergences, gaps) |
+| `bicameral.history` | Read-only snapshot of all decisions grouped by feature |
+| `bicameral.link_commit` | Sync a commit — update content hashes, re-evaluate drift |
+| `bicameral.drift` | Detect drift for decisions touching a specific file |
+| `bicameral.judge_gaps` | Run the business-requirement gap rubric on a topic |
+| `bicameral.resolve_compliance` | Write back caller-LLM compliance verdicts (compliant/drifted/not_relevant) |
+| `bicameral.ratify` | Record product sign-off on a decision |
+| `bicameral.update` | Check for and apply recommended version updates |
+| `bicameral.reset` | Wipe the ledger for the current repo (dry-run by default) |
+| `bicameral.dashboard` | Start the local dashboard server and return its URL |
 
-#### bicameral.search
+### Code Locator
 
-```json
-{
-  "type": "object",
-  "properties": {
-    "query": {
-      "type": "string",
-      "description": "Natural language description — e.g. 'add retry with backoff'"
-    },
-    "max_results": {
-      "type": "integer",
-      "default": 10
-    },
-    "min_confidence": {
-      "type": "number",
-      "default": 0.5,
-      "description": "Minimum BM25 confidence score (0-1)"
-    }
-  },
-  "required": ["query"]
-}
-```
+The server exposes deterministic primitives only. Callers use their own
+tools (Grep/Read/Glob) for code search and pass resolved file paths /
+symbol names back to the server.
 
-#### bicameral.drift
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "file_path": {
-      "type": "string",
-      "description": "File path relative to repo root"
-    },
-    "use_working_tree": {
-      "type": "boolean",
-      "default": true,
-      "description": "True = compare against disk (pre-commit), False = compare against HEAD"
-    }
-  },
-  "required": ["file_path"]
-}
-```
-
-#### bicameral.link_commit
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "commit_hash": {
-      "type": "string",
-      "default": "HEAD",
-      "description": "Git commit hash or ref to sync (default: HEAD)"
-    }
-  }
-}
-```
-
-#### bicameral.ingest
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "payload": {
-      "type": "object",
-      "description": "Normalized ingest payload matching the internal code-locator handoff shape"
-    },
-    "source_scope": {
-      "type": "string",
-      "default": "default",
-      "description": "Source stream identifier, e.g. Slack channel or Notion database"
-    },
-    "cursor": {
-      "type": "string",
-      "description": "Optional upstream checkpoint (timestamp, event id, updated_at)"
-    }
-  },
-  "required": ["payload"]
-}
-```
-
-#### validate_symbols
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "candidates": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "Symbol name hypotheses to validate (e.g. ['CheckoutController', 'processOrder'])"
-    }
-  },
-  "required": ["candidates"]
-}
-```
-
-#### search_code
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "query": {
-      "type": "string",
-      "description": "Text search query (e.g. 'checkout rate limit middleware')"
-    },
-    "symbol_ids": {
-      "type": "array",
-      "items": { "type": "integer" },
-      "description": "Symbol IDs from validate_symbols to use as graph traversal seeds"
-    }
-  },
-  "required": ["query"]
-}
-```
-
-#### get_neighbors
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "symbol_id": {
-      "type": "integer",
-      "description": "Symbol ID from validate_symbols results"
-    }
-  },
-  "required": ["symbol_id"]
-}
-```
-
-#### extract_symbols
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "file_path": {
-      "type": "string",
-      "description": "Absolute or repo-relative path to the source file"
-    }
-  },
-  "required": ["file_path"]
-}
-```
+| Tool | Purpose |
+|---|---|
+| `validate_symbols` | Fuzzy-match symbol name hypotheses against the code index |
+| `get_neighbors` | 1-hop structural graph traversal (callers, callees, imports) |
+| `extract_symbols` | Tree-sitter symbol extraction from a source file |
 
 </details>
-
----
-
-## Tool Composition
-
-The nine tools are designed to compose into three primary workflows:
-
-### Pre-flight (before coding)
-
-```
-bicameral.search("add rate limiting to checkout")
-  --> surfaces prior constraints, related decisions, and their code regions
-  --> auto-syncs ledger to HEAD before returning results
-```
-
-Use this to check for prior art and constraints before writing new code. Prevents CONSTRAINT_LOST and REPEATED_EXPLANATION.
-
-### Code review (before merging)
-
-```
-bicameral.drift("payments/processor.py")
-  --> surfaces all decisions touching symbols in this file
-  --> flags any where the code has diverged from recorded intent
-
-bicameral.status(filter="drifted")
-  --> full drift report across the entire codebase
-```
-
-Use this in pull request review to catch unintentional drift. The `use_working_tree` parameter controls whether comparison is against disk (pre-commit) or HEAD (PR review).
-
-### Ingestion (after a meeting)
-
-```
-bicameral.ingest(payload)
-  --> extracts intents, auto-grounds to code symbols
-  --> advances source cursor for incremental sync
-
-bicameral.link_commit("HEAD")
-  --> syncs latest commit state into the ledger
-
-bicameral.status(since="2025-03-20")
-  --> shows what's reflected vs. pending since the meeting
-```
-
----
-
-## Testing
-
-Bicameral has 42 test files organized into three phases, all using real adapters with `SURREAL_URL=memory://` (embedded, in-process SurrealDB -- no external services required).
-
-```bash
-pip install -e ".[test]"
-pytest tests/ -v
-```
-
-| Phase | Entry Point | Scope |
-|-------|-------------|-------|
-| **Phase 1** | `test_phase1_code_locator.py` | Code locator tools against a real indexed repository |
-| **Phase 2** | `test_phase2_ledger.py` | SurrealDB ledger adapter with `memory://` -- CRUD, graph traversal, cursor management |
-| **Phase 3** | `test_phase3_integration.py` | Full end-to-end: structured around the 5 SDLC failure modes |
-
-Additional test suites cover adversarial inputs (`test_stress_adversarial.py`), failure modes (`test_stress_failure_modes.py`), grounding state machine gaps (`test_grounding_state_machine_gaps.py`), and server smoke tests (`test_server_smoke.py`).
-
-Phase 3 tests produce JSON artifacts (`test-results/e2e/`) with full tool responses and SurrealDB graph dumps for qualitative review. CI runs via GitHub Actions on PRs to `main`, with JUnit XML and HTML reports uploaded as artifacts.
-
----
-
-## Collaboration Modes
-
-Bicameral runs in one of two modes, set during `bicameral-mcp setup` or in `.bicameral/config.yaml`:
-
-| | Solo (default) | Team |
-|---|---|---|
-| **Who** | Individual testing or evaluation | Any mix of roles -- devs, PMs, designers |
-| **Data** | Local DB only | Local DB + git-committed event files |
-| **Shared via** | Nothing -- fully isolated, zero impact on teammates | Normal `git push` / `git pull` |
-| **Merge conflicts** | N/A | Zero -- per-user directories, append-only files |
-
-**Solo mode** is ideal for trying Bicameral without affecting your team's workflow. All data stays in a gitignored local DB -- no event files, no commits, no side effects. Switch to team mode when you're ready to share.
-
-**Team mode** enables cross-role collaboration through git. A PM ingests a PRD and sprint transcript; when a developer pulls, `bicameral.search` surfaces those decisions as coding context and `bicameral.status` shows what still needs implementation. The PM never touches the code; the developer never sits through the meeting. The decision graph is the handoff.
-
-```
-.bicameral/
-├── events/              ← committed to git (shared decisions)
-│   ├── pm@co.com/       ← PM's ingested PRDs and transcripts
-│   └── dev@co.com/      ← developer's commit syncs
-├── config.yaml          ← committed (mode: solo | team)
-└── local/               ← gitignored (materialized state)
-```
-
-**Switching modes:** Set `mode: team` or `mode: solo` in `.bicameral/config.yaml`. No data migration needed.
 
 ---
 
 ## Configuration
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+|---|---|---|
 | `REPO_PATH` | `.` | Path to the repository being analyzed |
-| `SURREAL_URL` | `surrealkv://~/.bicameral/ledger.db` | SurrealDB connection URL. Use `memory://` for tests (no persistence). |
-| `CODE_LOCATOR_SQLITE_DB` | *(auto)* | Optional override for the local code index database path |
+| `SURREAL_URL` | `surrealkv://~/.bicameral/ledger.db` | SurrealDB URL. Use `memory://` for tests. |
+| `CODE_LOCATOR_SQLITE_DB` | *(auto)* | Override path for the code index database |
+| `BICAMERAL_AUTHORITATIVE_REF` | *(auto-detected)* | Override the main branch name (default: reads `origin/HEAD`) |
+| `BICAMERAL_PREFLIGHT_MUTE` | `0` | Set to `1` to silence preflight for one session |
+| `BICAMERAL_GUIDED_MODE` | *(from config.yaml)* | Set to `1` to force guided (blocking) mode |
 
-All data is stored locally. The embedded SurrealDB instance runs in-process -- no separate database server to manage.
+All data stays local. The embedded SurrealDB instance runs in-process — no separate server.
 
 ---
 
-## Roadmap
+## Local Development
 
-### CodeGenome Identity Layer
+```bash
+git clone https://github.com/BicameralAI/bicameral-mcp.git
+cd bicameral-mcp
+pip install -e "pilot/mcp[test]"
+cd pilot/mcp && pytest tests/ -v
+```
 
-The current system grounds decisions via symbol names and file paths. This works well for stable codebases, but location-based anchoring breaks when code is renamed, moved, or heavily refactored.
+Tests use real adapters with `SURREAL_URL=memory://` — no external services required. CI runs on PRs to `main` via GitHub Actions.
 
-The next major evolution -- **CodeGenome** -- replaces location-based anchoring with identity-based grounding: structural signatures and behavioral profiles that persist across renames, moves, and AI-driven rewrites. This resolves what we call the **Auto-Grounding Problem**: intent anchored to identity rather than location.
+---
 
-Where Bicameral today maps `intent --> symbol_name --> file:line`, CodeGenome will map `intent --> structural_identity --> any_location`, making the decision graph resilient to large-scale codebase reorganization.
+## Telemetry
+
+Bicameral collects anonymous usage statistics to improve reliability and prioritize development. No code, decision content, file paths, or personally identifiable information is ever collected.
+
+**What is collected:**
+- Tool name (e.g. `bicameral.ingest`)
+- Server version
+- Call duration (milliseconds)
+- Error flag (boolean)
+- Aggregate counts (e.g. number of decisions grounded per ingest call — integers only)
+
+**What is never collected:** decision descriptions, transcript content, search queries, file paths, repo names, or any user-supplied text.
+
+**Opt out at any time:**
+
+```bash
+export BICAMERAL_TELEMETRY=0
+```
+
+or add `BICAMERAL_TELEMETRY=0` to the `env` block in your `.mcp.json`.
+
+### Collaborator access
+
+Telemetry data is stored in a private PostHog project. If you are a design partner, contributor, or researcher who needs access to the usage dashboard, reach out directly at **jin@bicameral-ai.com**.
 
 ---
 
 ## Contributing
 
-Contributions are welcome. To get started:
-
-```bash
-git clone https://github.com/BicameralAI/bicameral-mcp.git
-cd bicameral-mcp
-pip install -e ".[test]"
-pytest tests/ -v
-```
-
-Please open an issue before submitting large changes.
+Contributions welcome. Please open an issue before submitting large changes.
 
 ---
 

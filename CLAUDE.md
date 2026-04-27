@@ -1,5 +1,21 @@
 # MCP Server — Claude Agent Instructions
 
+## Tool Changes Require Skill Changes (Mandatory)
+
+Any change to an MCP tool's behavior — new fields in a response, new status values,
+changed defaults, new tool calls, deprecated params — **must ship with a matching
+update to the relevant `skills/*/SKILL.md`** in the same commit.
+
+This is not optional. A tool change with no skill update is incomplete. The skill
+is the contract between the server and the agent layer; breaking it silently is
+worse than a compile error because it fails at runtime in production sessions.
+
+**Checklist before marking a tool PR complete:**
+- [ ] Did any response field change shape or gain a new value? → Update skill rendering section
+- [ ] Did any default behavior change? → Update skill's "Steps" or "After" section
+- [ ] Did a new tool get added? → Create `skills/<tool-name>/SKILL.md`
+- [ ] Did a status literal gain a new value (e.g. `"proposal"`)? → Update every skill that renders status
+
 ## Auto-Tick Rule
 
 After completing **any** implementation work in this directory:
@@ -18,7 +34,7 @@ pilot/mcp/
 ├── CLAUDE.md          ← you are here
 ├── PLAN.md            ← phased implementation plan (tick as you go)
 ├── TODO.md            ← hackathon task tracking + engineering progress
-├── server.py          ← MCP server entrypoint (9 tools: 5 ledger + 4 code locator)
+├── server.py          ← MCP server entrypoint (13 tools: 10 ledger + 3 code locator primitives)
 ├── contracts.py       ← MCP response types (Pydantic)
 ├── code_locator_runtime.py ← index lifecycle management
 ├── adapters/          ← thin adapter layer
@@ -36,13 +52,12 @@ pilot/mcp/
 │   ├── queries.py
 │   ├── schema.py      ← canonical source for all table/index definitions
 │   └── status.py
-├── code_locator/      ← real code locator implementation
+├── code_locator/      ← symbol index + deterministic primitives
 │   ├── config.py
 │   ├── models.py
-│   ├── fusion/        ← RRF fusion
-│   ├── indexing/       ← symbol extraction, graph building, BM25/sqlite indexing
-│   ├── retrieval/      ← BM25, sqlite-vec clients
-│   └── tools/          ← validate_symbols, search_code, get_neighbors
+│   ├── indexing/      ← tree-sitter symbol extraction, graph building, sqlite store
+│   └── tools/         ← validate_symbols, get_neighbors (no code search —
+│                         callers use Grep/Read for retrieval)
 ├── mocks/             ← retired (README.md tracks history)
 │   └── README.md
 └── tests/

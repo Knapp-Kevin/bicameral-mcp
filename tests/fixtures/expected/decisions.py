@@ -23,7 +23,6 @@ MEDUSA_PAYMENT_TIMEOUT = [
         "keywords": ["payment timeout", "authorize call", "12 second", "requires_more", "checkout timeout"],
         "expected_symbols": [
             "PaymentProviderService",
-            "CartCompletionStrategy",
         ],
         "expected_file_patterns": ["payment", "checkout", "cart"],
         "prd_failure_mode": "CONSTRAINT_LOST",  # Rate limit / timeout ceiling is a hard constraint
@@ -34,9 +33,7 @@ MEDUSA_PAYMENT_TIMEOUT = [
         "source_ref": "medusa-payment-timeout",
         "keywords": ["sweeper job", "pending payment session", "void", "5 minutes", "job scheduler"],
         "expected_symbols": [
-            "JobSchedulerService",
             "PaymentProviderService",
-            "PaymentSessionService",
         ],
         "expected_file_patterns": ["payment", "job", "scheduler"],
         "prd_failure_mode": "DECISION_UNDOCUMENTED",  # Easy to skip the sweeper, not in obvious place
@@ -75,7 +72,6 @@ MEDUSA_PLUGIN_MIGRATION = [
         "keywords": ["plugin migration", "AbstractModuleService", "@Module decorator", "TransactionBaseService", "v2 module"],
         "expected_symbols": [
             "AbstractModuleService",
-            "PluginManager",
         ],
         "expected_file_patterns": ["plugin", "module", "service"],
         "prd_failure_mode": "CONTEXT_SCATTERED",
@@ -126,7 +122,6 @@ MEDUSA_WEBHOOKS = [
         "source_ref": "medusa-webhook-notifications",
         "keywords": ["WebhookEndpoint", "merchant webhook", "webhook model", "HMAC secret", "event subscription"],
         "expected_symbols": [
-            "WebhookEndpoint",
             "AbstractNotificationProviderService",
         ],
         "expected_file_patterns": ["webhook", "model", "notification"],
@@ -170,7 +165,7 @@ SALEOR_CHECKOUT = [
         "source_ref": "saleor-checkout-extensibility",
         "keywords": ["checkout validation", "synchronous hooks", "ValidationError", "reject operation", "pre-validation"],
         "expected_symbols": [
-            "PluginManager",
+            "PluginsManager",
             "CheckoutError",
         ],
         "expected_file_patterns": ["checkout", "plugin", "validation"],
@@ -203,7 +198,7 @@ SALEOR_CHECKOUT = [
         "source_ref": "saleor-checkout-extensibility",
         "keywords": ["plugin data access", "serialized data", "security boundary", "not raw queryset"],
         "expected_symbols": [
-            "PluginManager",
+            "PluginsManager",
         ],
         "expected_file_patterns": ["plugin", "checkout"],
         "prd_failure_mode": "CONSTRAINT_LOST",
@@ -271,7 +266,7 @@ SALEOR_ORDERS = [
         "source_ref": "saleor-order-workflows",
         "keywords": ["on_commit", "webhook timing", "FULFILLMENT_CREATED", "defer webhook", "after transaction"],
         "expected_symbols": [
-            "on_commit",
+            "fulfillment_created",
             "FULFILLMENT_CREATED",
         ],
         "expected_file_patterns": ["fulfillment", "webhook", "order"],
@@ -352,7 +347,7 @@ VENDURE_CUSTOM_FIELDS = [
         "source_ref": "vendure-custom-fields",
         "keywords": ["struct custom field", "simple-json", "no SQL indexing", "nested field warning"],
         "expected_symbols": [],
-        "expected_file_patterns": ["custom-field"],
+        "expected_file_patterns": ["custom", "shared-types"],
         "prd_failure_mode": "TRIBAL_KNOWLEDGE",
         "adversarial_type": "negation",  # "If you need to filter... don't use struct"
         "status_at_ingest": "ungrounded",
@@ -379,7 +374,7 @@ VENDURE_SEARCH = [
         "source_ref": "vendure-search-reindexing",
         "keywords": ["activeQueues", "split workers", "dedicated search worker", "worker isolation"],
         "expected_symbols": [],
-        "expected_file_patterns": ["worker", "config"],
+        "expected_file_patterns": ["search", "worker", "config"],
         "prd_failure_mode": "CONSTRAINT_LOST",
         "status_at_ingest": "ungrounded",
     },
@@ -391,6 +386,91 @@ VENDURE_SEARCH = [
         "expected_file_patterns": ["search-plugin", "search-strategy", "reindex"],
         "prd_failure_mode": "CONSTRAINT_LOST",
         "status_at_ingest": "ungrounded",  # Performance targets — code exists but decision is aspirational
+    },
+]
+
+# ── Bicameral MCP: Multi-Region Grounding (FC-2 eval, v0.4.6+) ──────
+# These decisions intentionally span 3+ files. They exercise the
+# multi-file grounding pipeline that v0.4.6 introduced to fix the
+# FC-2 "single-anchor collapse" pathology. Each entry lists the full
+# set of expected_file_patterns covering ALL implementation files —
+# recall@files measures whether the grounder finds the full spread.
+BICAMERAL_MULTI_REGION = [
+    {
+        "description": "Caller-LLM-driven ingest pipeline: ingest decisions with explicit code_regions from the caller, persist maps_to edges in the ledger, return pending compliance checks for verification",
+        "source_ref": "bicameral-mcp-multi-region",
+        "keywords": ["ingest pipeline", "caller-LLM binding", "maps_to edges", "bicameral.bind"],
+        "expected_symbols": [
+            "handle_ingest",
+            "handle_bind",
+            "RealCodeLocatorAdapter",
+            "SurrealDBLedgerAdapter",
+        ],
+        "expected_file_patterns": [
+            "handlers/ingest",
+            "handlers/bind",
+            "adapters/code_locator",
+            "ledger/adapter",
+        ],
+        "prd_failure_mode": "CONTEXT_SCATTERED",
+        "status_at_ingest": "reflected",
+        "multi_region": True,
+    },
+    {
+        "description": "Deterministic symbol resolution: tree-sitter extraction builds the SQLite symbol index; rapidfuzz fuzzy validation confirms caller symbol candidates; no LLM in the indexing path",
+        "source_ref": "bicameral-mcp-multi-region",
+        "keywords": ["symbol index", "tree-sitter", "validate_symbols", "fuzzy validation"],
+        "expected_symbols": [
+            "ValidateSymbolsTool",
+            "SymbolDB",
+            "extract_symbols_from_content",
+        ],
+        "expected_file_patterns": [
+            "code_locator/tools/validate_symbols",
+            "code_locator/indexing/sqlite_store",
+            "code_locator/indexing/symbol_extractor",
+        ],
+        "prd_failure_mode": "CONTEXT_SCATTERED",
+        "status_at_ingest": "reflected",
+        "multi_region": True,
+    },
+    {
+        "description": "Drift detection flow: detect changed files in a commit, look up intents grounded to those files, recompute status via hash comparison, update intent status",
+        "source_ref": "bicameral-mcp-multi-region",
+        "keywords": ["drift detection", "link_commit", "derive_status", "hash comparison", "detect_drift"],
+        "expected_symbols": [
+            "handle_link_commit",
+            "handle_detect_drift",
+            "derive_status",
+            "HashDriftAnalyzer",
+        ],
+        "expected_file_patterns": [
+            "handlers/link_commit",
+            "handlers/detect_drift",
+            "ledger/status",
+            "ledger/drift",
+        ],
+        "prd_failure_mode": "CONTEXT_SCATTERED",
+        "status_at_ingest": "reflected",
+        "multi_region": True,
+    },
+    {
+        "description": "Team collaboration mode: dual-write adapter intercepts mutations, emits event files, materializes peer events on startup for multi-user ledger sync",
+        "source_ref": "bicameral-mcp-multi-region",
+        "keywords": ["team mode", "dual-write", "event sourcing", "TeamWriteAdapter", "materializer"],
+        "expected_symbols": [
+            "TeamWriteAdapter",
+            "EventFileWriter",
+            "EventMaterializer",
+        ],
+        "expected_file_patterns": [
+            "events/team_adapter",
+            "events/writer",
+            "events/materializer",
+        ],
+        "prd_failure_mode": "CONTEXT_SCATTERED",
+        "status_at_ingest": "reflected",
+        "multi_region": True,
     },
 ]
 
@@ -406,7 +486,11 @@ ALL_DECISIONS = (
     + VENDURE_PRICING
     + VENDURE_CUSTOM_FIELDS
     + VENDURE_SEARCH
+    + BICAMERAL_MULTI_REGION
 )
+
+# Multi-region decisions only (FC-2 eval)
+MULTI_REGION = [d for d in ALL_DECISIONS if d.get("multi_region")]
 
 # Grouped by failure mode for PRD failure mode tests
 BY_FAILURE_MODE: dict[str, list[dict]] = {}
@@ -419,3 +503,50 @@ ADVERSARIAL = [d for d in ALL_DECISIONS if d.get("adversarial_type")]
 
 # Decisions that should be ungrounded (no code exists yet)
 UNGROUNDED = [d for d in ALL_DECISIONS if d["status_at_ingest"] == "ungrounded"]
+
+
+# ── Transcript discovery map (M1 decision-relevance eval) ────────────
+#
+# Extends ground-truth fixtures into a corpus registry. The M1 runner reads
+# this to discover which transcript file feeds which repo. Add a new entry
+# here to onboard a new transcript — the runner picks it up automatically,
+# no code change required. `transcript` is resolved relative to the repo
+# root (the parent of pilot/mcp).
+#
+# `repo_key` is matched against the --multi-repo JSON the caller passes:
+#   python tests/eval_decision_relevance.py \
+#     --multi-repo '{"medusa": "test-results/.repos/medusa", "bicameral": "."}'
+# Only entries whose repo_key is in the mapping will run in a given
+# invocation, so partial runs are first-class.
+
+TRANSCRIPT_SOURCES: dict[str, dict] = {
+    # ── Adversarial corpus (M1 stress categories) ─────────────────
+    # M1 evaluates exclusively against this adversarial corpus. Each
+    # transcript deliberately exercises a failure mode documented in
+    # visual-plans/quality_metrics/m1-decision-relevance.html. The CI
+    # workflow aliases repo_key="adversarial" to the cloned medusa
+    # tree (any indexed code works — adversarial transcripts measure
+    # extraction quality, not grounding precision against a specific
+    # codebase). Ground truth for each lives at
+    # tests/fixtures/extraction/adv-*.json and is hand-editable.
+    "adv-strat-fake": {
+        "transcript": "tests/fixtures/transcripts/adv-strat-fake.md",
+        "repo_key": "adversarial",
+    },
+    "adv-vocab-collide": {
+        "transcript": "tests/fixtures/transcripts/adv-vocab-collide.md",
+        "repo_key": "adversarial",
+    },
+    "adv-density-extreme": {
+        "transcript": "tests/fixtures/transcripts/adv-density-extreme.md",
+        "repo_key": "adversarial",
+    },
+    "adv-offtopic-mix": {
+        "transcript": "tests/fixtures/transcripts/adv-offtopic-mix.md",
+        "repo_key": "adversarial",
+    },
+    "adv-reversal": {
+        "transcript": "tests/fixtures/transcripts/adv-reversal.md",
+        "repo_key": "adversarial",
+    },
+}

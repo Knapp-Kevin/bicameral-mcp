@@ -36,6 +36,9 @@ class ValidateSymbolsTool:
 
     def __init__(self, db: SymbolDB, config: CodeLocatorConfig) -> None:
         self.config = config
+        # Retained so code_locator.adapter.ground_mappings() can reach
+        # db.lookup_by_file() during auto-grounding. See adapters/code_locator.py:190.
+        self._db = db
         # Cache symbol list at init (not per-call)
         self._symbols: list[tuple[int, str, str]] = db.get_all_symbol_names()
 
@@ -74,12 +77,19 @@ class ValidateSymbolsTool:
         scored.sort(key=lambda x: x[3], reverse=True)
         survivors = scored[:100]
 
-        # Stage 2: Precise re-rank with WRatio on survivors
+        _SCORERS = {
+            "WRatio": fuzz.WRatio,
+            "token_set_ratio": fuzz.token_set_ratio,
+            "partial_ratio": fuzz.partial_ratio,
+        }
+        scorer = _SCORERS.get(self.config.fuzzy_scorer, fuzz.WRatio)
+
+        # Stage 2: Precise re-rank with configurable scorer on survivors
         reranked = []
         for sym_id, name, qualified_name, _ in survivors:
             score = max(
-                fuzz.WRatio(candidate_lower, name.lower()),
-                fuzz.WRatio(candidate_lower, qualified_name.lower()),
+                scorer(candidate_lower, name.lower()),
+                scorer(candidate_lower, qualified_name.lower()),
             )
 
             # Single-word candidates: require substring containment

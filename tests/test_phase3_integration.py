@@ -39,7 +39,7 @@ RESULTS_DIR = Path(__file__).parent.parent / "test-results" / "e2e"
 def setup_env(monkeypatch, tmp_path):
     """Fresh in-memory ledger for every test."""
     monkeypatch.setenv("SURREAL_URL", "memory://")
-    monkeypatch.setenv("REPO_PATH", str(Path(__file__).resolve().parents[3]))
+    monkeypatch.setenv("REPO_PATH", str(Path(__file__).resolve().parents[1]))
     reset_ledger_singleton()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     yield
@@ -61,36 +61,38 @@ def _dump(name: str, data: dict | list) -> None:
 async def _dump_graph(label: str) -> dict:
     """Dump raw SurrealDB graph state and write as artifact."""
     ledger = get_ledger()
-    await ledger._ensure_connected()
-    client = ledger._client
+    inner = getattr(ledger, "_inner", ledger)
+    await inner._ensure_connected()
+    client = inner._client
 
-    intents = await client.query("SELECT * FROM intent")
+    decisions = await client.query("SELECT * FROM decision")
     symbols = await client.query("SELECT * FROM symbol")
     regions = await client.query("SELECT * FROM code_region")
-    maps_to = await client.query("SELECT * FROM maps_to")
-    implements = await client.query("SELECT * FROM implements")
+    binds_to = await client.query("SELECT * FROM binds_to")
+    locates = await client.query("SELECT * FROM locates")
     depends_on = await client.query("SELECT * FROM depends_on")
     cursors = await client.query("SELECT * FROM source_cursor")
 
     graph = {
         "label": label,
         "nodes": {
-            "intents": intents,
+            "decisions": decisions,
             "symbols": symbols,
             "code_regions": regions,
             "source_cursors": cursors,
         },
         "edges": {
-            "maps_to": maps_to,
-            "implements": implements,
+            "binds_to": binds_to,
+            "locates": locates,
             "depends_on": depends_on,
         },
         "counts": {
-            "intents": len(intents),
+            "intents": len(decisions),  # alias for old test assertions
+            "decisions": len(decisions),
             "symbols": len(symbols),
             "code_regions": len(regions),
-            "maps_to": len(maps_to),
-            "implements": len(implements),
+            "binds_to": len(binds_to),
+            "locates": len(locates),
             "depends_on": len(depends_on),
         },
     }
@@ -105,14 +107,42 @@ def _response_dict(response) -> dict:
 
 # ── Real code locator helpers ────────────────────────────────────────
 
-def _locate_real_symbols(adapter, queries: list[str]) -> list[dict]:
-    """Use the real code locator to find actual symbols for each query."""
-    results = []
-    for q in queries:
-        hits = adapter.search_code(q)
-        for hit in hits[:2]:  # top 2 per query
-            results.append(hit)
-    return results
+def _locate_hits(adapter, query_str: str, limit: int = 2) -> list[dict]:
+    """Resolve a bag-of-words query to {file_path, symbol_name, line_number}
+    hits for test payload construction.
+
+    Tokenizes the query, fuzzy-validates each token against the symbol index,
+    and looks up the matched symbol rows in SymbolDB. Replaces the legacy
+    search_code helper — no BM25/RRF needed.
+    """
+    tokens = [t for t in query_str.split() if len(t) >= 2]
+    if not tokens:
+        return []
+
+    validated = adapter.validate_symbols(tokens)
+    if not validated:
+        return []
+
+    adapter._ensure_initialized()
+    db = adapter._db
+
+    hits: list[dict] = []
+    for v in validated:
+        sid = v.get("symbol_id")
+        if sid is None:
+            continue
+        row = db.lookup_by_id(sid)
+        if row is None:
+            continue
+        hits.append({
+            "file_path": row["file_path"],
+            "symbol_name": row["name"],
+            "line_number": row["start_line"],
+            "score": v.get("match_score", 0) / 100.0,
+        })
+        if len(hits) >= limit:
+            break
+    return hits
 
 
 def _build_payload_from_real_code(
@@ -130,7 +160,7 @@ def _build_payload_from_real_code(
     Each intent in `intents` has:
       - text: the spoken/written decision
       - intent: the extracted intent string
-      - search: code search query to find relevant code (or None for ungrounded)
+      - search: symbol-ish query to resolve to a real code region (or None for ungrounded)
       - speaker: who said it
     """
     mappings = []
@@ -139,8 +169,8 @@ def _build_payload_from_real_code(
         symbols = []
 
         if item.get("search"):
-            hits = adapter.search_code(item["search"])
-            for hit in hits[:2]:
+            hits = _locate_hits(adapter, item["search"], limit=2)
+            for hit in hits:
                 fp = hit.get("file_path", "")
                 sym = hit.get("symbol_name", "")
                 line = hit.get("line_number", 1)
@@ -151,7 +181,7 @@ def _build_payload_from_real_code(
                         "type": "function",
                         "start_line": line,
                         "end_line": line + 20,
-                        "purpose": f"Found by search_code({item['search']!r})",
+                        "purpose": f"Located from search terms: {item['search']!r}",
                     })
                     if sym:
                         symbols.append(sym)
@@ -277,13 +307,13 @@ async def test_context_scattered__ingest_unifies_sources(ctx):
     # Source 2: PRD about code locator requirements
     prd_payload = _build_payload_from_real_code(
         adapter,
-        query="Code locator PRD — search requirements",
-        search_queries=["search_code BM25"],
+        query="Code locator PRD — symbol index requirements",
+        search_queries=["validate_symbols symbol"],
         intents=[
             {
-                "text": "Code search must use BM25 + graph traversal with RRF fusion — no embeddings in MVP",
-                "intent": "BM25 + graph + RRF fusion for code search",
-                "search": "bm25 search retrieval",
+                "text": "Symbol resolution must be deterministic — tree-sitter extraction with fuzzy validation, no LLM in the indexing path",
+                "intent": "Deterministic symbol resolution via tree-sitter + fuzzy validation",
+                "search": "validate_symbols symbol index",
                 "speaker": "",
             },
             {
@@ -359,8 +389,11 @@ async def test_decision_undocumented__status_surfaces_ungrounded(ctx):
     _dump("03_undocumented_ingest", _response_dict(ingest_result))
 
     assert ingest_result.stats.ungrounded >= 1
-    assert any("zylorphian" in u.lower() for u in ingest_result.ungrounded_intents), (
-        f"Expected 'Zylorphian' in ungrounded list, got: {ingest_result.ungrounded_intents}"
+    assert any(
+        "zylorphian" in (u.get("description", "") or u.get("decision_id", "")).lower()
+        for u in ingest_result.pending_grounding_decisions
+    ), (
+        f"Expected 'Zylorphian' in pending_grounding_decisions, got: {ingest_result.pending_grounding_decisions}"
     )
 
     status = await handle_decision_status(ctx, filter="all")
@@ -447,7 +480,7 @@ async def test_tribal_knowledge__drift_surfaces_decisions_for_file(ctx):
     adapter = get_code_locator()
 
     # Find a real file that the code locator knows about
-    hits = adapter.search_code("contracts response pydantic")
+    hits = _locate_hits(adapter, "contracts response pydantic", limit=10)
     target_file = None
     for hit in hits:
         fp = hit.get("file_path", "")
@@ -564,13 +597,12 @@ async def test_full_lifecycle_graph_integrity(ctx):
     # Step 6: Full graph dump
     graph = await _dump_graph("06_lifecycle_final")
 
-    # Graph integrity
-    intent_ids = {i.get("id") for i in graph["nodes"]["intents"]}
-    symbol_ids = {s.get("id") for s in graph["nodes"]["symbols"]}
-    all_node_ids = intent_ids | symbol_ids
-    for edge in graph["edges"]["maps_to"]:
-        assert edge.get("in") in all_node_ids, f"Dangling maps_to.in: {edge.get('in')}"
-        assert edge.get("out") in all_node_ids, f"Dangling maps_to.out: {edge.get('out')}"
+    # Graph integrity (v4: decision→binds_to→code_region)
+    decision_ids = {i.get("id") for i in graph["nodes"]["decisions"]}
+    region_ids = {r.get("id") for r in graph["nodes"]["code_regions"]}
+    for edge in graph["edges"]["binds_to"]:
+        assert edge.get("in") in decision_ids, f"Dangling binds_to.in: {edge.get('in')}"
+        assert edge.get("out") in region_ids, f"Dangling binds_to.out: {edge.get('out')}"
 
     # At least one ungrounded
     statuses = {d.status for d in r_status.decisions}

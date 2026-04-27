@@ -45,23 +45,44 @@ class TeamWriteAdapter:
 
     # ── Write methods (intercepted: event file first, then DB) ───────────
 
-    async def ingest_payload(self, payload: dict) -> dict:
-        """Write ingest event, then delegate to inner adapter."""
+    async def ingest_payload(self, payload: dict, ctx=None) -> dict:
+        """Write ingest event, then delegate to inner adapter.
+
+        v0.4.12.1: forward the ``ctx`` kwarg added in v0.4.6's pollution
+        fix. Without this, handle_ingest's ``ledger.ingest_payload(payload, ctx=ctx)``
+        call fails in team mode with TypeError, which means EVERY team-mode
+        ingest has been broken since v0.4.6.
+        """
         await self._ensure_ready()
         self._writer.write("ingest.completed", payload)
-        return await self._inner.ingest_payload(payload)
+        return await self._inner.ingest_payload(payload, ctx=ctx)
 
     async def ingest_commit(
-        self, commit_hash: str, repo_path: str, drift_analyzer=None,
+        self,
+        commit_hash: str,
+        repo_path: str,
+        drift_analyzer=None,
+        authoritative_ref: str = "",
     ) -> dict:
-        """Write link_commit event, then delegate to inner adapter."""
+        """Write link_commit event, then delegate to inner adapter.
+
+        v0.4.12.1: forward the ``authoritative_ref`` kwarg added in
+        v0.4.6's pollution guard. Without this, every team-mode
+        ``handle_link_commit`` call silently failed with a TypeError —
+        bicameral's own bicameral repo (which runs in team mode) had
+        all 23 decisions stuck ungrounded because the link_commit sweep
+        never ran. Surfaced during v0.4.12 preflight dogfooding.
+        """
         await self._ensure_ready()
         self._writer.write(
             "link_commit.completed",
             {"commit_hash": commit_hash, "repo_path": repo_path},
         )
         return await self._inner.ingest_commit(
-            commit_hash, repo_path, drift_analyzer=drift_analyzer,
+            commit_hash,
+            repo_path,
+            drift_analyzer=drift_analyzer,
+            authoritative_ref=authoritative_ref,
         )
 
     async def upsert_source_cursor(
@@ -86,28 +107,37 @@ class TeamWriteAdapter:
             error=error,
         )
 
-    # ── Read methods (pass-through) ──────────────────────────────────────
-
-    async def get_all_decisions(self, filter: str = "all") -> list[dict]:
+    async def bind_decision(
+        self,
+        decision_id: str,
+        file_path: str,
+        symbol_name: str,
+        start_line: int,
+        end_line: int,
+        repo: str = "",
+        ref: str = "HEAD",
+        purpose: str = "",
+    ) -> dict:
+        """Emit bind event, then delegate to inner adapter."""
         await self._ensure_ready()
-        return await self._inner.get_all_decisions(filter=filter)
+        self._writer.write("bind_decision.completed", {
+            "decision_id": decision_id,
+            "file_path": file_path,
+            "symbol_name": symbol_name,
+            "start_line": start_line,
+            "end_line": end_line,
+        })
+        return await self._inner.bind_decision(
+            decision_id=decision_id,
+            file_path=file_path,
+            symbol_name=symbol_name,
+            start_line=start_line,
+            end_line=end_line,
+            repo=repo,
+            ref=ref,
+            purpose=purpose,
+        )
 
-    async def search_by_query(
-        self, query: str, max_results: int = 10, min_confidence: float = 0.5,
-    ) -> list[dict]:
-        await self._ensure_ready()
-        return await self._inner.search_by_query(query, max_results, min_confidence)
-
-    async def get_decisions_for_file(self, file_path: str) -> list[dict]:
-        await self._ensure_ready()
-        return await self._inner.get_decisions_for_file(file_path)
-
-    async def get_undocumented_symbols(self, file_path: str) -> list[str]:
-        await self._ensure_ready()
-        return await self._inner.get_undocumented_symbols(file_path)
-
-    async def get_source_cursor(
-        self, repo: str, source_type: str, source_scope: str = "default",
-    ) -> dict | None:
-        await self._ensure_ready()
-        return await self._inner.get_source_cursor(repo, source_type, source_scope)
+    def __getattr__(self, name: str):
+        """Passthrough to inner adapter for any method not explicitly overridden."""
+        return getattr(self._inner, name)

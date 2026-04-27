@@ -1,4 +1,8 @@
-"""SurrealQL query functions for the decision ledger.
+"""SurrealQL query functions for the decision ledger — v4 (v0.5.0).
+
+v4 graph shape:
+  Decision tier:  input_span -yields-> decision -binds_to-> code_region
+  Retrieval tier: symbol -locates-> code_region
 
 All functions take a LedgerClient and return plain Python types.
 No SDK types (RecordID etc.) leak through — normalization happens in client.py.
@@ -9,9 +13,33 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from .client import LedgerClient
+from .client import LedgerClient, LedgerError
 
 logger = logging.getLogger(__name__)
+
+
+# ── Idempotent edge creation ──────────────────────────────────────────────
+#
+# Edge tables (yields, binds_to, locates, depends_on) each have a
+# UNIQUE(in, out) index so the same logical relationship is never created twice.
+# Team-mode event replay re-issues every RELATE; duplicates are rejected by the
+# DB and treated as a no-op success here.
+
+async def _execute_idempotent_edge(
+    client: LedgerClient, sql: str, vars: dict | None = None
+) -> None:
+    """Run a RELATE statement that may hit a UNIQUE(in, out) violation.
+
+    A "Database index ... already contains" error is treated as success.
+    Any other LedgerError re-raises.
+    """
+    try:
+        await client.execute(sql, vars)
+    except LedgerError as exc:
+        if "already contains" not in str(exc):
+            raise
+        # Duplicate edge — already at desired end state, no-op.
+
 
 # ── Sync state ────────────────────────────────────────────────────────────
 
@@ -110,7 +138,7 @@ async def upsert_source_cursor(
     }
 
 
-# ── Intent queries ────────────────────────────────────────────────────────
+# ── Decision queries ──────────────────────────────────────────────────────
 
 
 async def get_all_decisions(
@@ -118,7 +146,7 @@ async def get_all_decisions(
     filter: str = "all",
     since: str | None = None,
 ) -> list[dict]:
-    """Forward graph traversal: intent → symbol → code_region."""
+    """Forward graph traversal: decision → binds_to → code_region."""
     where_clauses = []
     vars: dict = {}
 
@@ -134,7 +162,7 @@ async def get_all_decisions(
     rows = await client.query(
         f"""
         SELECT
-            type::string(id)  AS intent_id,
+            type::string(id)  AS decision_id,
             description,
             rationale,
             feature_hint,
@@ -143,30 +171,43 @@ async def get_all_decisions(
             meeting_date,
             speakers,
             status,
+            signoff,
             created_at,
-            ->maps_to->symbol->implements->code_region.{{
+            ->binds_to->code_region.{{
                 file_path,
                 symbol_name,
                 start_line,
                 end_line,
                 purpose,
                 content_hash
-            }} AS code_regions
-        FROM intent
+            }} AS code_regions,
+            <-yields<-input_span.{{text, meeting_date, speakers}} AS source_spans
+        FROM decision
         {where}
         ORDER BY created_at DESC
         """,
         vars or None,
     )
-    # Normalize created_at → ingested_at string
     for row in rows:
         ca = row.pop("created_at", None)
         row.setdefault("ingested_at", str(ca)[:24] if ca else "")
-    # Rename symbol_name → symbol in each region (AS alias not supported in v2 traversals)
     for row in rows:
         for region in (row.get("code_regions") or []):
             if region and "symbol_name" in region:
                 region["symbol"] = region.pop("symbol_name")
+    for row in rows:
+        spans = row.pop("source_spans", None) or []
+        description = row.get("description", "")
+        real_spans = [
+            s for s in spans
+            if s and s.get("text") and s.get("text") != description
+        ]
+        first_span = real_spans[0] if real_spans else None
+        row["source_excerpt"] = (first_span.get("text") if first_span else "") or ""
+        if not row.get("meeting_date"):
+            row["meeting_date"] = (first_span.get("meeting_date") if first_span else "") or ""
+        if not row.get("speakers"):
+            row["speakers"] = (first_span.get("speakers") if first_span else []) or []
     return _normalize_decisions(rows)
 
 
@@ -176,49 +217,127 @@ async def search_by_bm25(
     max_results: int = 10,
     min_confidence: float = 0.5,
 ) -> list[dict]:
-    """BM25 search on intent.description."""
+    """BM25 search on decision.description.
+
+    Also pulls input_span.text (raw passage) + meeting_date via the
+    yields reverse edge so callers can render the meeting excerpt.
+    """
     rows = await client.query(
         """
         SELECT
-            type::string(id)  AS intent_id,
+            type::string(id)  AS decision_id,
             description,
             source_type,
             source_ref,
             status,
+            signoff,
             created_at,
-            ->maps_to->symbol->implements->code_region.{
+            ->binds_to->code_region.{
                 file_path,
                 symbol_name,
                 start_line,
                 end_line,
                 purpose,
                 content_hash
-            } AS code_regions
-        FROM intent
+            } AS code_regions,
+            <-yields<-input_span.{text, meeting_date} AS source_spans
+        FROM decision
         WHERE description @0@ $query
         LIMIT $n
         """,
         {"query": query, "n": max_results},
     )
-    # @0@ already filtered to matching documents.
-    # Assign position-based confidence (1.0 for first match, decreasing).
-    # Note: embedded SurrealDB v2 always returns search::score=0.0 — use count instead.
     total = len(rows)
     for i, row in enumerate(rows):
         ca = row.pop("created_at", None)
         row.setdefault("ingested_at", str(ca)[:24] if ca else "")
-        row["confidence"] = round(1.0 - (i / max(total, 1)) * 0.4, 2)  # 1.0 → 0.6
+        row["confidence"] = round(1.0 - (i / max(total, 1)) * 0.4, 2)
         for region in (row.get("code_regions") or []):
             if region and "symbol_name" in region:
                 region["symbol"] = region.pop("symbol_name")
+        spans = row.pop("source_spans", None) or []
+        description = row.get("description", "")
+        real_spans = [
+            s for s in spans
+            if s and s.get("text") and s.get("text") != description
+        ]
+        first_span = real_spans[0] if real_spans else None
+        row["source_excerpt"] = (first_span.get("text") if first_span else "") or ""
+        row["meeting_date"] = (first_span.get("meeting_date") if first_span else "") or ""
     return _normalize_decisions(rows)
+
+
+# ── vocab_cache: grounding reuse cache ─────────────────────────────────
+
+
+async def lookup_vocab_cache(
+    client: LedgerClient,
+    query_text: str,
+    repo: str,
+    max_results: int = 3,
+) -> tuple[list[dict], str]:
+    """BM25 lookup on vocab_cache for cached grounding results.
+
+    Returns a 2-tuple: (symbols, matched_query_text).
+    On hit, increments hit_count and refreshes last_hit for LRU tracking.
+    """
+    rows = await client.query(
+        """
+        SELECT *
+        FROM vocab_cache
+        WHERE query_text @0@ $query
+            AND repo = $repo
+        LIMIT $max_results
+        """,
+        {"query": query_text, "repo": repo, "max_results": max_results},
+    )
+    if not rows:
+        return [], ""
+
+    top = rows[0]
+    top_id = top.get("id")
+    if top_id:
+        await client.query(
+            f"UPDATE {top_id} SET hit_count += 1, last_hit = time::now()",
+        )
+
+    return top.get("symbols") or [], str(top.get("query_text") or "")
+
+
+async def upsert_vocab_cache(
+    client: LedgerClient,
+    query_text: str,
+    repo: str,
+    symbols: list[dict],
+) -> None:
+    """Write or update a vocab_cache entry."""
+    await client.query(
+        """
+        UPSERT vocab_cache SET
+            query_text = $query_text,
+            repo       = $repo,
+            symbols    = $symbols,
+            hit_count  = IF hit_count THEN hit_count + 1 ELSE 1 END,
+            last_hit   = time::now()
+        WHERE query_text = $query_text AND repo = $repo
+        """,
+        {
+            "query_text": query_text,
+            "repo": repo,
+            "symbols": symbols,
+        },
+    )
 
 
 async def get_decisions_for_file(
     client: LedgerClient,
     file_path: str,
 ) -> list[dict]:
-    """Reverse traversal: code_region → symbol → intent for a given file."""
+    """Reverse traversal: code_region → binds_to (reverse) → decision for a given file.
+
+    Also pulls source_excerpt + meeting_date per decision via the
+    yields reverse edge so the drift handler can render the meeting passage.
+    """
     rows = await client.query(
         """
         SELECT
@@ -229,23 +348,24 @@ async def get_decisions_for_file(
             end_line,
             purpose,
             content_hash,
-            <-implements<-symbol<-maps_to<-intent.{
+            <-binds_to<-decision.{
                 id,
                 description,
                 source_type,
                 source_ref,
                 status,
+                signoff,
                 created_at
-            } AS intents
+            } AS decisions
         FROM code_region
         WHERE file_path = $fp
         """,
         {"fp": file_path},
     )
 
-    # Flatten: one row per (region, intent) pair
     results = []
-    seen_intent_ids: set[str] = set()
+    seen_decision_ids: set[str] = set()
+    decision_id_set: set[str] = set()
     for region_row in rows:
         region = {
             "file_path": region_row.get("file_path", ""),
@@ -254,23 +374,171 @@ async def get_decisions_for_file(
             "purpose": region_row.get("purpose", ""),
             "content_hash": region_row.get("content_hash", ""),
         }
-        for intent in (region_row.get("intents") or []):
-            if intent is None:
+        for decision in (region_row.get("decisions") or []):
+            if decision is None:
                 continue
-            iid = str(intent.get("id", ""))
-            if iid in seen_intent_ids:
+            did = str(decision.get("id", ""))
+            if did in seen_decision_ids:
                 continue
-            seen_intent_ids.add(iid)
+            seen_decision_ids.add(did)
+            decision_id_set.add(did)
             results.append({
-                "intent_id": iid,
-                "description": intent.get("description", ""),
-                "source_type": intent.get("source_type", ""),
-                "source_ref": intent.get("source_ref", ""),
+                "decision_id": did,
+                "description": decision.get("description", ""),
+                "source_type": decision.get("source_type", ""),
+                "source_ref": decision.get("source_ref", ""),
+                "source_excerpt": "",
+                "meeting_date": "",
                 "speaker": "",
-                "ingested_at": str(intent.get("created_at", "")),
-                "status": intent.get("status", "ungrounded"),
+                "ingested_at": str(decision.get("created_at", "")),
+                "status": decision.get("status", "ungrounded"),
+                "signoff": decision.get("signoff"),
                 "code_region": region,
             })
+
+    # Backfill source_excerpt + meeting_date via yields reverse edge
+    if decision_id_set:
+        excerpt_rows = await client.query(
+            """
+            SELECT
+                type::string(id) AS decision_id,
+                <-yields<-input_span.{text, meeting_date} AS source_spans
+            FROM decision
+            WHERE type::string(id) IN $ids
+            """,
+            {"ids": list(decision_id_set)},
+        )
+        excerpt_by_decision: dict[str, tuple[str, str]] = {}
+        desc_by_decision = {e["decision_id"]: e.get("description", "") for e in results}
+        for r in (excerpt_rows or []):
+            did = str(r.get("decision_id", ""))
+            desc = desc_by_decision.get(did, "")
+            spans = r.get("source_spans") or []
+            real_spans = [
+                s for s in spans
+                if s and s.get("text") and s.get("text") != desc
+            ]
+            first = real_spans[0] if real_spans else None
+            if first:
+                excerpt_by_decision[did] = (
+                    str(first.get("text") or ""),
+                    str(first.get("meeting_date") or ""),
+                )
+        for entry in results:
+            did = entry["decision_id"]
+            if did in excerpt_by_decision:
+                excerpt, mdate = excerpt_by_decision[did]
+                entry["source_excerpt"] = excerpt
+                entry["meeting_date"] = mdate
+
+    return results
+
+
+async def get_decisions_for_files(
+    client: LedgerClient,
+    file_paths: list[str],
+) -> list[dict]:
+    """Bulk reverse traversal: given a list of file paths, return all decisions
+    pinned to any code_region in those files.
+
+    Same shape as get_decisions_for_file but batched — avoids N+1 queries
+    when the caller has several candidate files from a code locator search.
+    """
+    if not file_paths:
+        return []
+
+    rows = await client.query(
+        """
+        SELECT
+            type::string(id) AS region_id,
+            file_path,
+            symbol_name,
+            start_line,
+            end_line,
+            purpose,
+            content_hash,
+            <-binds_to<-decision.{
+                id,
+                description,
+                source_type,
+                source_ref,
+                status,
+                signoff,
+                created_at
+            } AS decisions
+        FROM code_region
+        WHERE file_path IN $fps
+        """,
+        {"fps": file_paths},
+    )
+
+    results = []
+    seen_decision_ids: set[str] = set()
+    decision_id_set: set[str] = set()
+    for region_row in rows:
+        region = {
+            "file_path": region_row.get("file_path", ""),
+            "symbol": region_row.get("symbol_name", ""),
+            "lines": (region_row.get("start_line", 0), region_row.get("end_line", 0)),
+            "purpose": region_row.get("purpose", ""),
+            "content_hash": region_row.get("content_hash", ""),
+        }
+        for decision in (region_row.get("decisions") or []):
+            if decision is None:
+                continue
+            did = str(decision.get("id", ""))
+            if did in seen_decision_ids:
+                continue
+            seen_decision_ids.add(did)
+            decision_id_set.add(did)
+            results.append({
+                "decision_id": did,
+                "description": decision.get("description", ""),
+                "source_type": decision.get("source_type", ""),
+                "source_ref": decision.get("source_ref", ""),
+                "source_excerpt": "",
+                "meeting_date": "",
+                "ingested_at": str(decision.get("created_at", "")),
+                "status": decision.get("status", "ungrounded"),
+                "signoff": decision.get("signoff"),
+                "code_region": region,
+            })
+
+    # Backfill source_excerpt + meeting_date
+    if decision_id_set:
+        excerpt_rows = await client.query(
+            """
+            SELECT
+                type::string(id) AS decision_id,
+                <-yields<-input_span.{text, meeting_date} AS source_spans
+            FROM decision
+            WHERE type::string(id) IN $ids
+            """,
+            {"ids": list(decision_id_set)},
+        )
+        desc_by_decision = {e["decision_id"]: e.get("description", "") for e in results}
+        excerpt_by_decision: dict[str, tuple[str, str]] = {}
+        for r in (excerpt_rows or []):
+            did = str(r.get("decision_id", ""))
+            desc = desc_by_decision.get(did, "")
+            spans = r.get("source_spans") or []
+            real_spans = [
+                s for s in spans
+                if s and s.get("text") and s.get("text") != desc
+            ]
+            first = real_spans[0] if real_spans else None
+            if first:
+                excerpt_by_decision[did] = (
+                    str(first.get("text") or ""),
+                    str(first.get("meeting_date") or ""),
+                )
+        for entry in results:
+            did = entry["decision_id"]
+            if did in excerpt_by_decision:
+                excerpt, mdate = excerpt_by_decision[did]
+                entry["source_excerpt"] = excerpt
+                entry["meeting_date"] = mdate
+
     return results
 
 
@@ -278,13 +546,13 @@ async def get_undocumented_symbols(
     client: LedgerClient,
     file_path: str,
 ) -> list[str]:
-    """Return symbol names in file_path with no mapped intent."""
+    """Return symbol names in file_path with no bound decision."""
     rows = await client.query(
         """
         SELECT symbol_name
         FROM code_region
         WHERE file_path = $fp
-          AND (<-implements<-symbol<-maps_to<-intent) = []
+          AND (<-binds_to<-decision) = []
         """,
         {"fp": file_path},
     )
@@ -294,50 +562,82 @@ async def get_undocumented_symbols(
 # ── Ingestion ─────────────────────────────────────────────────────────────
 
 
-async def upsert_intent(
+async def upsert_decision(
     client: LedgerClient,
     description: str,
     source_type: str,
     source_ref: str = "",
     rationale: str = "",
     feature_hint: str = "",
+    feature_group: str | None = None,
     meeting_date: str = "",
     speakers: list = (),
     status: str = "ungrounded",
+    signoff: dict | None = None,
 ) -> str:
-    """Create or update an intent node. Returns the intent ID string."""
-    rows = await client.query(
-        """
-        UPSERT intent SET
-            description  = $description,
-            source_type  = $source_type,
-            source_ref   = $source_ref,
-            rationale    = $rationale,
-            feature_hint = $feature_hint,
-            meeting_date = $meeting_date,
-            speakers     = $speakers,
-            status       = $status,
-            created_at   = IF created_at THEN created_at ELSE time::now() END
-        WHERE description = $description AND source_ref = $source_ref
-        """,
-        {
-            "description": description,
-            "source_type": source_type,
-            "source_ref": source_ref,
+    """Create or update a decision node. Returns the decision ID string.
+
+    Dedup key is canonical_id (UUIDv5 derived from canonicalized description +
+    canonicalized source_ref). Falls back to description-based query for
+    legacy rows pre-v0.4.13 (now kept for safety across re-ingests).
+    """
+    from .canonical import canonical_decision_id
+
+    cid = canonical_decision_id(description, source_type, source_ref)
+
+    existing = await client.query(
+        "SELECT id FROM decision WHERE canonical_id = $cid LIMIT 1",
+        {"cid": cid},
+    )
+    if existing:
+        update_params: dict = {
             "rationale": rationale,
             "feature_hint": feature_hint,
             "meeting_date": meeting_date,
             "speakers": list(speakers),
             "status": status,
-        },
+        }
+        set_clause = (
+            "rationale = $rationale, feature_hint = $feature_hint, "
+            "meeting_date = $meeting_date, speakers = $speakers, status = $status"
+        )
+        if signoff is not None:
+            set_clause += ", signoff = $signoff"
+            update_params["signoff"] = signoff
+        if feature_group is not None:
+            set_clause += ", feature_group = $feature_group"
+            update_params["feature_group"] = feature_group
+        await client.query(
+            f"UPDATE {existing[0]['id']} SET {set_clause}",
+            update_params,
+        )
+        return str(existing[0]["id"])
+
+    # Truly new — CREATE with canonical_id stamped
+    create_params: dict = {
+        "d": description,
+        "st": source_type,
+        "sr": source_ref,
+        "s": status,
+        "cid": cid,
+        "rationale": rationale,
+        "feature_hint": feature_hint,
+        "meeting_date": meeting_date,
+        "speakers": list(speakers),
+    }
+    create_clause = (
+        "CREATE decision SET description=$d, source_type=$st, source_ref=$sr, "
+        "status=$s, canonical_id=$cid, rationale=$rationale, "
+        "feature_hint=$feature_hint, meeting_date=$meeting_date, "
+        "speakers=$speakers"
     )
-    if rows:
-        return str(rows[0].get("id", ""))
-    # Fallback: create new
-    rows = await client.query(
-        "CREATE intent SET description=$d, source_type=$st, source_ref=$sr, status=$s",
-        {"d": description, "st": source_type, "sr": source_ref, "s": status},
-    )
+    if signoff is not None:
+        create_clause += ", signoff=$signoff"
+        create_params["signoff"] = signoff
+    if feature_group is not None:
+        create_clause += ", feature_group=$feature_group"
+        create_params["feature_group"] = feature_group
+    rows = await client.query(create_clause, create_params)
     return str(rows[0].get("id", "")) if rows else ""
 
 
@@ -407,33 +707,128 @@ async def upsert_code_region(
     return str(rows[0].get("id", "")) if rows else ""
 
 
-async def relate_maps_to(
+async def upsert_compliance_check(
     client: LedgerClient,
-    intent_id: str,
-    symbol_id: str,
-    confidence: float = 0.8,
+    decision_id: str,
+    region_id: str,
+    content_hash: str,
+    verdict: str,
+    confidence: str,
+    explanation: str,
+    phase: str,
+    commit_hash: str = "",
+    pruned: bool = False,
+    ephemeral: bool = False,
+) -> bool:
+    """Write a compliance_check row keyed on (decision_id, region_id, content_hash).
+
+    Returns True when written, False when the row already existed (first-write-wins).
+    verdict must be one of: 'compliant', 'drifted', 'not_relevant'.
+    ephemeral=True marks the verdict as from a WIP/fixup commit; downstream
+    queries filter these out when computing decision status and drift scoring.
+    """
+    try:
+        await client.execute(
+            "CREATE compliance_check SET decision_id = $d, region_id = $r, "
+            "content_hash = $h, verdict = $v, confidence = $cf, "
+            "explanation = $e, phase = $p, commit_hash = $cm, pruned = $pr, "
+            "ephemeral = $ep",
+            {
+                "d": decision_id,
+                "r": region_id,
+                "h": content_hash,
+                "v": verdict,
+                "cf": confidence,
+                "e": explanation,
+                "p": phase,
+                "cm": commit_hash,
+                "pr": pruned,
+                "ep": ephemeral,
+            },
+        )
+        return True
+    except LedgerError as exc:
+        if "already contains" not in str(exc):
+            raise
+        return False
+
+
+async def decision_exists(client: LedgerClient, decision_id: str) -> bool:
+    """Return True iff a decision row exists with the given record id."""
+    rows = await client.query(f"SELECT id FROM {decision_id} LIMIT 1")
+    return bool(rows)
+
+
+async def region_exists(client: LedgerClient, region_id: str) -> bool:
+    """Return True iff a code_region row exists with the given record id."""
+    rows = await client.query(f"SELECT id FROM {region_id} LIMIT 1")
+    return bool(rows)
+
+
+async def get_compliance_verdict(
+    client: LedgerClient,
+    decision_id: str,
+    region_id: str,
+    content_hash: str,
+) -> dict | None:
+    """Return the cached LLM verdict for this exact code shape, or None.
+
+    Includes both ephemeral (feature-branch) and non-ephemeral verdicts — callers
+    use the `ephemeral` field on the row to differentiate branch-delta vs main state.
+    """
+    rows = await client.query(
+        "SELECT verdict, pruned, confidence, explanation, phase, checked_at, ephemeral "
+        "FROM compliance_check "
+        "WHERE decision_id = $d AND region_id = $r AND content_hash = $h "
+        "LIMIT 1",
+        {"d": decision_id, "r": region_id, "h": content_hash},
+    )
+    return rows[0] if rows else None
+
+
+async def relate_yields(
+    client: LedgerClient,
+    span_id: str,
+    decision_id: str,
 ) -> None:
-    """Create intent → maps_to → symbol edge (idempotent via DELETE + CREATE)."""
-    await client.execute(
-        f"RELATE {intent_id}->maps_to->{symbol_id} SET confidence=$c, created_at=time::now()",
-        {"c": confidence},
+    """Create input_span → yields → decision edge. Idempotent via UNIQUE(in, out)."""
+    await _execute_idempotent_edge(
+        client,
+        f"RELATE {span_id}->yields->{decision_id} SET created_at=time::now()",
     )
 
 
-async def relate_implements(
+async def relate_binds_to(
+    client: LedgerClient,
+    decision_id: str,
+    region_id: str,
+    confidence: float = 0.8,
+    provenance: dict | None = None,
+) -> None:
+    """Create decision → binds_to → code_region edge. Idempotent via UNIQUE(in, out)."""
+    prov = provenance or {}
+    await _execute_idempotent_edge(
+        client,
+        f"RELATE {decision_id}->binds_to->{region_id} SET confidence=$c, provenance=$p, created_at=time::now()",
+        {"c": confidence, "p": prov},
+    )
+
+
+async def relate_locates(
     client: LedgerClient,
     symbol_id: str,
     region_id: str,
     confidence: float = 0.8,
 ) -> None:
-    """Create symbol → implements → code_region edge."""
-    await client.execute(
-        f"RELATE {symbol_id}->implements->{region_id} SET confidence=$c, created_at=time::now()",
+    """Create symbol → locates → code_region edge. Idempotent via UNIQUE(in, out)."""
+    await _execute_idempotent_edge(
+        client,
+        f"RELATE {symbol_id}->locates->{region_id} SET confidence=$c, created_at=time::now()",
         {"c": confidence},
     )
 
 
-async def upsert_source_span(
+async def upsert_input_span(
     client: LedgerClient,
     text: str,
     source_type: str,
@@ -441,14 +836,16 @@ async def upsert_source_span(
     speakers: list = (),
     meeting_date: str = "",
 ) -> str:
-    """Create or update a source_span node. Returns the source_span ID string.
+    """Create or update an input_span node. Returns the input_span ID string.
 
-    Deduplicates on (source_type, source_ref, text) — same excerpt from the
-    same source is the same span.
+    Deduplicates on (source_type, source_ref, text). text must be non-empty
+    (enforced by the schema ASSERT constraint).
     """
+    if not text:
+        return ""
     rows = await client.query(
         """
-        UPSERT source_span SET
+        UPSERT input_span SET
             text         = $text,
             source_type  = $source_type,
             source_ref   = $source_ref,
@@ -468,31 +865,20 @@ async def upsert_source_span(
     if rows:
         return str(rows[0].get("id", ""))
     rows = await client.query(
-        "CREATE source_span SET text=$t, source_type=$st, source_ref=$sr, speakers=$sp, meeting_date=$md",
+        "CREATE input_span SET text=$t, source_type=$st, source_ref=$sr, speakers=$sp, meeting_date=$md",
         {"t": text, "st": source_type, "sr": source_ref, "sp": list(speakers), "md": meeting_date},
     )
     return str(rows[0].get("id", "")) if rows else ""
 
 
-async def relate_yields(
+async def update_decision_status(
     client: LedgerClient,
-    span_id: str,
-    intent_id: str,
-) -> None:
-    """Create source_span → yields → intent edge (extraction provenance)."""
-    await client.execute(
-        f"RELATE {span_id}->yields->{intent_id} SET created_at=time::now()",
-    )
-
-
-async def update_intent_status(
-    client: LedgerClient,
-    intent_id: str,
+    decision_id: str,
     status: str,
 ) -> None:
-    """Update the cached status on an intent node."""
+    """Update the cached status on a decision node."""
     await client.execute(
-        f"UPDATE {intent_id} SET status = $s",
+        f"UPDATE {decision_id} SET status = $s",
         {"s": status},
     )
 
@@ -514,7 +900,10 @@ async def get_regions_for_files(
     client: LedgerClient,
     file_paths: list[str],
 ) -> list[dict]:
-    """Return all code_region records for a list of file paths."""
+    """Return all code_region records for a list of file paths.
+
+    Uses binds_to reverse traversal to find linked decisions.
+    """
     if not file_paths:
         return []
     rows = await client.query(
@@ -522,7 +911,7 @@ async def get_regions_for_files(
         SELECT
             type::string(id) AS region_id,
             file_path, symbol_name, start_line, end_line, content_hash,
-            <-implements<-symbol<-maps_to<-intent.{id, status, description} AS intents
+            <-binds_to<-decision.{id, status, description} AS decisions
         FROM code_region
         WHERE file_path IN $fps
         """,
@@ -531,7 +920,222 @@ async def get_regions_for_files(
     return rows
 
 
+async def get_regions_without_hash(
+    client: LedgerClient,
+    repo: str = "",
+) -> list[dict]:
+    """Return regions whose content_hash has never been stamped."""
+    rows = await client.query(
+        """
+        SELECT
+            type::string(id) AS region_id,
+            file_path, symbol_name, start_line, end_line, content_hash, repo,
+            <-binds_to<-decision.{id, status, description} AS decisions
+        FROM code_region
+        """,
+    )
+    filtered = [r for r in (rows or []) if not r.get("content_hash")]
+    if repo:
+        filtered = [r for r in filtered if str(r.get("repo", "")) == repo]
+    return filtered
+
+
+async def delete_binds_to_edge(
+    client: LedgerClient,
+    decision_id: str,
+    region_id: str,
+) -> None:
+    """Delete a binds_to edge between a decision and a code_region.
+
+    Used when a caller returns a not_relevant verdict — retrieval made a
+    mistake and the binding should not be kept.
+    """
+    try:
+        await client.execute(
+            f"DELETE FROM binds_to WHERE in = {decision_id} AND out = {region_id}",
+        )
+    except Exception as exc:
+        logger.warning("[delete_binds_to] %s → %s failed: %s", decision_id, region_id, exc)
+
+
+async def has_prior_compliant_verdict(
+    client: LedgerClient,
+    decision_id: str,
+    region_id: str,
+) -> bool:
+    """True if ANY past content_hash for this (decision, region) was verified compliant.
+
+    Used by project_decision_status to distinguish:
+      - never-verified bindings (→ pending, waiting for first verdict)
+      - previously-verified bindings where code has since changed (→ drifted)
+
+    Without this check, every code edit silently parks decisions at "pending"
+    forever because the new hash has no cache entry.
+
+    Includes ephemeral (feature-branch) verdicts — branch-delta compliance still
+    counts as prior signal for drift detection.
+    """
+    rows = await client.query(
+        "SELECT count() AS n FROM compliance_check "
+        "WHERE decision_id = $d AND region_id = $r AND verdict = 'compliant' "
+        "GROUP ALL",
+        {"d": decision_id, "r": region_id},
+    )
+    if not rows:
+        return False
+    return int(rows[0].get("n", 0)) > 0
+
+
+async def project_decision_status(
+    client: LedgerClient,
+    decision_id: str,
+) -> str:
+    """Derive decision.status from signoff + compliance verdict aggregation.
+
+    Double-entry 2×2 + strict aggregation:
+    - signoff.state == 'proposed' → 'proposal' (drift-exempt, awaiting ratification)
+    - No binds_to AND signoff None → 'ungrounded'
+    - No binds_to AND signoff ratified → 'pending'
+    - Any bound region with drifted verdict → 'drifted'
+    - Any bound region with no verdict for current hash, prior compliant
+      verdict existed → 'drifted' (was verified, code has since changed)
+    - Any bound region with no verdict for current hash, no prior verdict
+      → 'pending' (first-time bind, awaiting initial verification)
+    - All bound regions compliant + signoff ratified → 'reflected'
+    - All bound regions compliant + signoff None → 'pending' (hero case)
+
+    DRIFTED always wins over signoff state — broken code is broken code.
+    Proposed decisions are drift-exempt: they never enter drifted/reflected
+    until ratified.
+    """
+    dec_rows = await client.query(
+        f"SELECT signoff, status FROM {decision_id} LIMIT 1",
+    )
+    if not dec_rows:
+        return "ungrounded"
+
+    # Short-circuit: superseded is a terminal state written by HITL (resolve_collision).
+    # It is never re-derived from compliance — drift sweeps must not overwrite it.
+    if dec_rows[0].get("status") == "superseded":
+        return "superseded"
+
+    signoff = dec_rows[0].get("signoff")
+
+    # Short-circuit: context_pending decisions need a business driver answer before
+    # they enter the normal drift/compliance cycle.
+    if signoff and isinstance(signoff, dict) and signoff.get("state") == "context_pending":
+        return "context_pending"
+
+    # Short-circuit: collision_pending decisions are held proposals awaiting HITL resolution
+    if signoff and isinstance(signoff, dict) and signoff.get("state") == "collision_pending":
+        return "proposal"
+
+    # Short-circuit: proposed decisions are drift-exempt
+    if signoff and isinstance(signoff, dict) and signoff.get("state") == "proposed":
+        return "proposal"
+
+    # For ratified decisions, use the same bool check as before
+    is_ratified = bool(signoff)
+
+    # Get all non-pruned bound regions + their current content_hash
+    binding_rows = await client.query(
+        f"""
+        SELECT type::string(out) AS region_id, out.content_hash AS content_hash
+        FROM binds_to
+        WHERE in = {decision_id}
+        """,
+    )
+
+    if not binding_rows:
+        return "pending" if is_ratified else "ungrounded"
+
+    all_compliant = True
+    any_drifted = False
+    any_pending = False
+
+    for binding in binding_rows:
+        region_id = binding.get("region_id", "")
+        content_hash = binding.get("content_hash", "")
+
+        if not region_id or not content_hash:
+            any_pending = True
+            all_compliant = False
+            continue
+
+        verdict = await get_compliance_verdict(client, decision_id, region_id, content_hash)
+        if verdict is None:
+            # Cache miss for the current hash. Distinguish first-time bind
+            # (pending) from post-verification code change (drifted).
+            if await has_prior_compliant_verdict(client, decision_id, region_id):
+                any_drifted = True
+                all_compliant = False
+            else:
+                any_pending = True
+                all_compliant = False
+        elif verdict.get("pruned", False):
+            # Pruned regions are not_relevant — invisible to aggregation
+            continue
+        elif verdict.get("verdict") != "compliant":
+            any_drifted = True
+            all_compliant = False
+
+    if any_drifted:
+        return "drifted"
+    if any_pending:
+        return "pending"
+    if all_compliant:
+        return "reflected" if is_ratified else "pending"
+    return "pending"
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────
+
+
+async def get_grounding_breakdown(
+    client: LedgerClient,
+    source_type: str | None = None,
+    source_scope: str | None = None,
+) -> list[dict]:
+    """Per-source_ref grounded/ungrounded/total/pct breakdown."""
+    where_clauses: list[str] = []
+    vars: dict = {}
+    if source_type:
+        where_clauses.append("source_type = $source_type")
+        vars["source_type"] = source_type
+    if source_scope:
+        where_clauses.append("source_ref CONTAINS $source_scope")
+        vars["source_scope"] = source_scope
+    where = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    rows = await client.query(
+        f"""
+        SELECT source_ref, status
+        FROM decision
+        {where}
+        """,
+        vars or None,
+    )
+
+    buckets: dict[str, dict] = {}
+    for row in rows:
+        ref = str(row.get("source_ref") or "")
+        status = str(row.get("status") or "")
+        b = buckets.setdefault(
+            ref,
+            {"source_ref": ref, "grounded": 0, "ungrounded": 0, "total": 0, "grounded_pct": 0.0},
+        )
+        b["total"] += 1
+        if status == "ungrounded":
+            b["ungrounded"] += 1
+        else:
+            b["grounded"] += 1
+
+    out = []
+    for b in buckets.values():
+        b["grounded_pct"] = (b["grounded"] / b["total"]) if b["total"] > 0 else 0.0
+        out.append(b)
+    out.sort(key=lambda r: r["source_ref"])
+    return out
 
 
 def _normalize_decisions(rows: list[dict]) -> list[dict]:
@@ -542,12 +1146,163 @@ def _normalize_decisions(rows: list[dict]) -> list[dict]:
         for r in regions:
             if r is None:
                 continue
-            # Ensure 'lines' tuple for handler compatibility
             r["lines"] = (r.pop("start_line", 0), r.pop("end_line", 0))
             normalized.append(r)
         row["code_regions"] = normalized
-        # Ensure speaker field exists
         if "speaker" not in row:
             speakers = row.get("speakers") or []
             row["speaker"] = speakers[0] if speakers else ""
     return rows
+
+
+# ── HITL graph edges (v0.8.0) ────────────────────────────────────────────────
+
+
+async def relate_supersedes(
+    client: LedgerClient,
+    new_id: str,
+    old_id: str,
+    confidence: float = 1.0,
+    reason: str = "",
+) -> None:
+    """Write decision → supersedes → decision edge. Idempotent via UNIQUE(in, out)."""
+    await _execute_idempotent_edge(
+        client,
+        f"RELATE {new_id}->supersedes->{old_id} "
+        "SET confidence=$c, reason=$r, created_at=time::now()",
+        {"c": confidence, "r": reason},
+    )
+
+
+async def relate_context_for(
+    client: LedgerClient,
+    span_id: str,
+    decision_id: str,
+    state: str = "confirmed",
+    relevance_score: float = 0.0,
+    reason: str = "",
+) -> None:
+    """Write input_span → context_for → decision edge.
+
+    state: 'confirmed' | 'rejected' | 'proposed'
+    Idempotent: updates state if edge already exists (via UPSERT on unique pair).
+    """
+    try:
+        await client.execute(
+            f"RELATE {span_id}->context_for->{decision_id} "
+            "SET state=$s, relevance_score=$rs, reason=$r, created_at=time::now()",
+            {"s": state, "rs": relevance_score, "r": reason},
+        )
+    except LedgerError as exc:
+        if "already contains" in str(exc):
+            # Edge exists — update state and reason in place
+            await client.execute(
+                f"UPDATE context_for SET state=$s, reason=$r "
+                f"WHERE in = {span_id} AND out = {decision_id}",
+                {"s": state, "r": reason},
+            )
+        else:
+            raise
+
+
+async def get_input_span_id(
+    client: LedgerClient,
+    source_type: str,
+    source_ref: str,
+    text: str,
+) -> str:
+    """Look up an input_span record ID by its dedup key. Returns '' if not found."""
+    rows = await client.query(
+        "SELECT type::string(id) AS id FROM input_span "
+        "WHERE source_type = $st AND source_ref = $sr AND text = $text LIMIT 1",
+        {"st": source_type, "sr": source_ref, "text": text},
+    )
+    return str(rows[0].get("id", "")) if rows else ""
+
+
+async def search_context_pending_by_text(
+    client: LedgerClient,
+    text: str,
+    top_k: int = 5,
+) -> list[dict]:
+    """BM25 search on decision descriptions, filtered to context_pending signoff state.
+
+    Returns up to top_k decisions that are in context_pending state and whose
+    description matches the given text. Score is rank-position (BM25 score is
+    always 0.0 in SurrealDB v2 embedded).
+    """
+    rows = await client.query(
+        "SELECT type::string(id) AS decision_id, description, signoff "
+        "FROM decision WHERE description @0@ $q LIMIT $n",
+        {"q": text, "n": top_k + 10},  # +10 slack for post-filter
+    )
+    results = []
+    total = len(rows)
+    for i, row in enumerate(rows):
+        signoff = row.get("signoff")
+        if not (signoff and isinstance(signoff, dict) and signoff.get("state") == "context_pending"):
+            continue
+        results.append({
+            "decision_id": row.get("decision_id", ""),
+            "description": row.get("description", ""),
+            "overlap_score": round(1.0 - (i / max(total, 1)) * 0.4, 2),
+        })
+        if len(results) >= top_k:
+            break
+    return results
+
+
+async def get_collision_pending_decisions(
+    client: LedgerClient,
+) -> list[dict]:
+    """Return all decisions with signoff.state = 'collision_pending'.
+
+    These are held proposals awaiting HITL supersession resolution. Used by
+    preflight to surface unresolved collisions from prior sessions.
+    """
+    rows = await client.query(
+        "SELECT type::string(id) AS decision_id, description, signoff, status "
+        "FROM decision WHERE signoff.state = 'collision_pending'",
+    )
+    return [
+        {
+            "decision_id": str(r.get("decision_id", "")),
+            "description": str(r.get("description", "")),
+            "signoff": r.get("signoff"),
+            "status": str(r.get("status", "proposal")),
+        }
+        for r in (rows or [])
+        if r.get("decision_id")
+    ]
+
+
+async def get_context_for_ready_decisions(
+    client: LedgerClient,
+) -> list[dict]:
+    """Return context_pending decisions that have ≥1 confirmed context_for edge.
+
+    These are ready for ratification — they have context but haven't been
+    ratified yet. Used by preflight to surface the ready-for-ratification queue.
+    """
+    rows = await client.query(
+        """
+        SELECT
+            type::string(id) AS decision_id,
+            description,
+            signoff,
+            status,
+            count(<-context_for[WHERE state = 'confirmed']) AS confirmed_ctx_count
+        FROM decision
+        WHERE signoff.state = 'context_pending'
+        """,
+    )
+    return [
+        {
+            "decision_id": str(r.get("decision_id", "")),
+            "description": str(r.get("description", "")),
+            "signoff": r.get("signoff"),
+            "status": "context_pending",
+        }
+        for r in (rows or [])
+        if r.get("decision_id") and int(r.get("confirmed_ctx_count") or 0) > 0
+    ]

@@ -11,8 +11,10 @@ test-results/
 *.pkl
 .DS_Store
 
-# Bicameral MCP local data (team mode — events/ is committed)
-.bicameral/local/
-
 # Local MCP config (contains absolute paths)
 .mcp.json
+
+.gstack/
+
+# Bicameral MCP local data (history stored in parent repo)
+.bicameral/
