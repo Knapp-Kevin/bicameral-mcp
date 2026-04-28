@@ -26,6 +26,14 @@
 - [ ] [B3] Issue #61 — CodeGenome Phase 4 semantic drift evaluation in
       `resolve_compliance`. Depends on #59; recommended after #60.
 
+- [ ] [B4] M5 benchmark fixture corpus for Phase 3 continuity
+      (`tests/fixtures/codegenome_m5/{moved,renamed,logic_removed,class_extracted}/`).
+      Plan deferred from #60 PR — unit + integration tests in
+      `test_codegenome_continuity*.py` cover the scenarios via stubs and
+      provide adequate behavioral coverage; the real-fixture corpus
+      enables the false-positive-rate benchmark called for in #60's exit
+      criteria. Add as a follow-up PR before #61 starts.
+
 ## Wishlist (Nice to Have)
 <!-- Format: - [ ] [W#] Description -->
 - [ ] [W1] Section-4 razor enforcement on legacy oversized files

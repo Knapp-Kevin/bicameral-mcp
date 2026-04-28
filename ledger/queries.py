@@ -1469,6 +1469,7 @@ async def upsert_subject_identity(
     content_hash: str | None,
     confidence: float,
     model_version: str,
+    neighbors_at_bind: tuple[str, ...] | list[str] | None = None,
 ) -> str:
     """Create-or-fetch a subject_identity row by ``address`` (UNIQUE).
 
@@ -1480,6 +1481,10 @@ async def upsert_subject_identity(
     SELECT and both attempt CREATE, the loser hits the UNIQUE(address)
     index and SurrealDB returns "already contains"; we re-SELECT and
     return the winning row's id rather than propagating the conflict.
+
+    ``neighbors_at_bind`` (v12) is persisted as ``array<string>`` when
+    provided, ``NONE`` otherwise. Phase 3's continuity matcher reads this
+    field to compute Jaccard against post-rebase neighbors.
     """
     rows = await client.query(
         "SELECT id FROM subject_identity WHERE address = $a LIMIT 1",
@@ -1487,6 +1492,8 @@ async def upsert_subject_identity(
     )
     if rows:
         return str(rows[0].get("id", ""))
+
+    neighbors_value = list(neighbors_at_bind) if neighbors_at_bind is not None else None
 
     create_args = {
         "address": address,
@@ -1497,6 +1504,7 @@ async def upsert_subject_identity(
         "content_hash": content_hash,
         "confidence": confidence,
         "model_version": model_version,
+        "neighbors_at_bind": neighbors_value,
     }
     try:
         rows = await client.query(
@@ -1509,7 +1517,8 @@ async def upsert_subject_identity(
                 signature_hash       = $signature_hash,
                 content_hash         = $content_hash,
                 confidence           = $confidence,
-                model_version        = $model_version
+                model_version        = $model_version,
+                neighbors_at_bind    = $neighbors_at_bind
             """,
             create_args,
         )
@@ -1558,6 +1567,146 @@ async def link_decision_to_subject(
     )
 
 
+async def update_binds_to_region(
+    client: LedgerClient,
+    decision_id: str,
+    old_region_id: str,
+    new_region_id: str,
+    *,
+    confidence: float = 0.85,
+) -> None:
+    """Phase 3 (#60): redirect a decision's binds_to from old to new region.
+
+    Deletes the old ``decision -binds_to-> old_region`` edge and creates a
+    fresh edge to ``new_region`` with ``provenance.method = "continuity_resolved"``.
+    The old binding's audit trail lives in the parallel ``identity_supersedes``
+    edge written by ``write_identity_supersedes``.
+    """
+    did = _validated_record_id(decision_id, "decision")
+    old_id = _validated_record_id(old_region_id, "code_region")
+    new_id = _validated_record_id(new_region_id, "code_region")
+    await client.execute(
+        f"DELETE FROM binds_to WHERE in = {did} AND out = {old_id}",
+    )
+    # Embed provenance as a SurrealQL object literal — passing it via
+    # the ``$p`` parameter silently drops nested dicts to ``{}`` under
+    # surrealdb-py 2.0.0. The literal value is internal-only (no caller
+    # input interpolated).
+    await _execute_idempotent_edge(
+        client,
+        f"RELATE {did}->binds_to->{new_id} "
+        "SET confidence=$c, "
+        "provenance={method: 'continuity_resolved'}, "
+        "created_at=time::now()",
+        {"c": confidence},
+    )
+
+
+async def write_identity_supersedes(
+    client: LedgerClient,
+    old_identity_id: str,
+    new_identity_id: str,
+    change_type: str,
+    confidence: float,
+    evidence_refs: tuple[str, ...] | list[str] = (),
+) -> None:
+    """Phase 3 (#60): record an identity transition. Idempotent on (in, out).
+
+    ``change_type`` must be one of ``moved``, ``renamed``, ``moved_and_renamed``
+    (enforced by the schema's ASSERT).
+    """
+    old_id = _validated_record_id(old_identity_id, "subject_identity")
+    new_id = _validated_record_id(new_identity_id, "subject_identity")
+    await _execute_idempotent_edge(
+        client,
+        f"RELATE {old_id}->identity_supersedes->{new_id} "
+        "SET change_type=$ct, confidence=$c, evidence_refs=$er, created_at=time::now()",
+        {"ct": change_type, "c": confidence, "er": list(evidence_refs)},
+    )
+
+
+async def write_subject_version(
+    client: LedgerClient,
+    code_subject_id: str,
+    repo_ref: str,
+    file_path: str,
+    start_line: int,
+    end_line: int,
+    *,
+    symbol_name: str | None = None,
+    symbol_kind: str | None = None,
+    content_hash: str | None = None,
+    signature_hash: str | None = None,
+) -> str:
+    """Phase 3 (#60): upsert a subject_version row at a concrete location.
+
+    Keyed on ``(repo_ref, file_path, start_line, end_line)`` — repeated calls
+    for the same location return the same id. Caller is responsible for the
+    ``has_version`` edge (``relate_has_version``).
+    """
+    _validated_record_id(code_subject_id, "code_subject")  # validate; no interpolation here
+    rows = await client.query(
+        """
+        UPSERT subject_version SET
+            repo_ref       = $repo_ref,
+            file_path      = $file_path,
+            start_line     = $start_line,
+            end_line       = $end_line,
+            symbol_name    = $symbol_name,
+            symbol_kind    = $symbol_kind,
+            content_hash   = $content_hash,
+            signature_hash = $signature_hash
+        WHERE repo_ref = $repo_ref AND file_path = $file_path
+              AND start_line = $start_line AND end_line = $end_line
+        """,
+        {
+            "repo_ref": repo_ref, "file_path": file_path,
+            "start_line": start_line, "end_line": end_line,
+            "symbol_name": symbol_name, "symbol_kind": symbol_kind,
+            "content_hash": content_hash, "signature_hash": signature_hash,
+        },
+    )
+    if rows:
+        return str(rows[0].get("id", ""))
+    rows = await client.query(
+        """
+        CREATE subject_version SET
+            repo_ref=$repo_ref, file_path=$file_path,
+            start_line=$start_line, end_line=$end_line,
+            symbol_name=$symbol_name, symbol_kind=$symbol_kind,
+            content_hash=$content_hash, signature_hash=$signature_hash
+        """,
+        {
+            "repo_ref": repo_ref, "file_path": file_path,
+            "start_line": start_line, "end_line": end_line,
+            "symbol_name": symbol_name, "symbol_kind": symbol_kind,
+            "content_hash": content_hash, "signature_hash": signature_hash,
+        },
+    )
+    return str(rows[0].get("id", "")) if rows else ""
+
+
+async def relate_has_version(
+    client: LedgerClient,
+    code_subject_id: str,
+    subject_version_id: str,
+    confidence: float = 0.9,
+) -> None:
+    """Phase 3 (#60): code_subject → has_version → subject_version. Idempotent.
+
+    Mirrors ``relate_has_identity``. Closes the orphan-edge condition where
+    ``has_version`` was defined-but-unused since #59 schema migration.
+    """
+    csid = _validated_record_id(code_subject_id, "code_subject")
+    svid = _validated_record_id(subject_version_id, "subject_version")
+    await _execute_idempotent_edge(
+        client,
+        f"RELATE {csid}->has_version->{svid} "
+        "SET confidence=$c, created_at=time::now()",
+        {"c": confidence},
+    )
+
+
 async def find_subject_identities_for_decision(
     client: LedgerClient,
     decision_id: str,
@@ -1580,7 +1729,8 @@ async def find_subject_identities_for_decision(
             signature_hash,
             content_hash,
             confidence,
-            model_version
+            model_version,
+            neighbors_at_bind
         FROM {did}->about->code_subject->has_identity->subject_identity
         """,
     )
@@ -1595,6 +1745,7 @@ async def find_subject_identities_for_decision(
             "content_hash": r.get("content_hash"),
             "confidence": float(r.get("confidence") or 0.0),
             "model_version": str(r.get("model_version", "")),
+            "neighbors_at_bind": r.get("neighbors_at_bind"),
         }
         for r in (rows or [])
         if r.get("identity_id")

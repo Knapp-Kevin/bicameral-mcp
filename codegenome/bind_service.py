@@ -80,6 +80,21 @@ async def _persist_subject_and_identity(
     return True
 
 
+def _compute_identity_for_bind(
+    codegenome, file_path, start_line, end_line, repo_ref, code_locator,
+):
+    """Phase 1+2 path (compute_identity) vs Phase 3 path (with neighbors)."""
+    if code_locator is not None and hasattr(codegenome, "compute_identity_with_neighbors"):
+        return codegenome.compute_identity_with_neighbors(
+            file_path=file_path, start_line=start_line, end_line=end_line,
+            code_locator=code_locator, repo_ref=repo_ref,
+        )
+    return codegenome.compute_identity(
+        file_path=file_path, start_line=start_line, end_line=end_line,
+        repo_ref=repo_ref,
+    )
+
+
 async def write_codegenome_identity(
     *,
     ledger,
@@ -92,19 +107,16 @@ async def write_codegenome_identity(
     end_line: int,
     repo_ref: str = "HEAD",
     code_region_content_hash: str = "",
+    code_locator=None,
 ) -> SubjectIdentity | None:
     """Compute identity for the bound region and write the v11 records.
 
-    Returns the persisted ``SubjectIdentity`` on success, or ``None`` if
-    the underlying ledger writes did not complete (empty IDs from the
-    upserts). The identity is computed regardless; the return shape
-    distinguishes "computed and persisted" from "computed only".
+    Returns the persisted ``SubjectIdentity`` on success, ``None`` on
+    persist failure. When ``code_locator`` is provided + the adapter
+    supports it, the Phase-3 neighbor-aware path runs.
     """
-    identity = codegenome.compute_identity(
-        file_path=file_path,
-        start_line=start_line,
-        end_line=end_line,
-        repo_ref=repo_ref,
+    identity = _compute_identity_for_bind(
+        codegenome, file_path, start_line, end_line, repo_ref, code_locator,
     )
     _check_hash_parity(
         identity, code_region_content_hash,

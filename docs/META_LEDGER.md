@@ -200,6 +200,197 @@ audited plan; all exit criteria for issue #59 satisfied; no new
 violations introduced post-rebase. Session is sealed.
 
 ---
-*Chain integrity: VALID (6 entries)*
-*Genesis: `29dfd085` → Seal: `509b411d`*
-*Next required action: push rebased branch + update PR #71; on merge, `/qor-plan` for issue #60 (CodeGenome Phase 3 — continuity evaluation)*
+
+### Entry #7: GATE TRIBUNAL (Phase 3 plan)
+
+**Timestamp**: 2026-04-28T03:18:53Z
+**Phase**: GATE
+**Author**: Judge (executed via `/qor-audit`)
+**Risk Grade**: L2
+**Verdict**: VETO
+**Mode**: solo (capability shortfalls per Entry #3)
+
+**Target**: `plan-codegenome-phase-3.md` (CodeGenome Phase 3 — continuity evaluation, issue #60)
+
+**Content Hash**:
+SHA256(AUDIT_REPORT.md) = `3d77c8d2860e177cb0a320ee017188aa280c2df6499486fd3b50996db44eede3`
+
+**Previous Hash**: `509b411d...` (Entry #6, SUBSTANTIATION seal of Phase 1+2)
+
+**Chain Hash**:
+SHA256(content_hash + previous_hash) = `7fad10597b6cbdfb50bf0041169e5905a08bda1004ad59b9d7feb1f8b2edad93`
+
+**Decision**: VETO. Three coupled orphan / macro-architecture failures
+(V1, V2, V3 — same root cause): plan's auto-resolve recipe references
+records and edges that the recipe does not create. `write_subject_version`
+omits the `has_version` edge wire-up; `write_identity_supersedes`
+references a `new_identity_id` whose creation is not enumerated;
+`update_binds_to_region` references a `new_region_id` whose creation
+is not enumerated. All other audit passes (Security, OWASP, Ghost UI,
+Razor, Dependency, Grounding) PASS. Remediation is mechanical — extend
+the plan's `evaluate_continuity_for_drift` description with the 7-step
+sequence enumerated in the audit report, and add a `relate_has_version`
+ledger query.
+
+---
+
+### Entry #8: GATE TRIBUNAL (Phase 3 plan, Re-Audit)
+
+**Timestamp**: 2026-04-28T03:37:09Z
+**Phase**: GATE
+**Author**: Judge (executed via `/qor-audit`)
+**Risk Grade**: L2
+**Verdict**: PASS
+**Mode**: solo
+
+**Target**: `plan-codegenome-phase-3.md` (post-remediation)
+
+**Content Hash**:
+SHA256(AUDIT_REPORT.md) = `9ed0eb80371d5e4c6e8c99ae1fa42585cc2ddd488baf8435dd58c8fc960d3bcf`
+
+**Previous Hash**: `7fad1059...` (Entry #7, predecessor VETO)
+
+**Chain Hash**:
+SHA256(content_hash + previous_hash) = `e249fb8f42ad4fdd2f6bf23528b8dd119ad44466411102339fcf3d92be59f514`
+
+**Decision**: PASS. All three predecessor violations (V1, V2, V3 —
+coupled orphan/macro-architecture findings) closed by surgical
+remediations. Auto-resolve recipe in `evaluate_continuity_for_drift`
+is now a complete 7-step sequence with every RELATE preceded by the
+upsert that creates its target row. The previously-orphan `has_version`
+edge (defined-but-unused since #59) gains its first caller via the new
+`relate_has_version` query. No new violations introduced. Section 4
+razor footprint commitment intact at success-criteria level. Gate is
+OPEN for `/qor-implement` of Phase 3.
+
+---
+
+### Entry #9: IMPLEMENTATION (Phase 3, #60)
+
+**Timestamp**: 2026-04-28T04:38:55Z
+**Phase**: IMPLEMENT
+**Author**: Specialist (executed via `/qor-implement`)
+**Risk Grade**: L2
+
+**Files created**:
+- `codegenome/continuity.py` (matcher: 151 LOC)
+- `codegenome/continuity_service.py` (orchestrator + DriftContext: 190 LOC)
+- `tests/test_codegenome_continuity.py` (18 tests)
+- `tests/test_codegenome_continuity_ledger.py` (8 tests)
+- `tests/test_codegenome_continuity_service.py` (5 tests)
+
+**Files modified**:
+- `codegenome/adapter.py` (+`SubjectIdentity.neighbors_at_bind` field)
+- `codegenome/deterministic_adapter.py` (+`compute_identity_with_neighbors`)
+- `codegenome/bind_service.py` (+optional `code_locator` arg)
+- `handlers/bind.py` (passes `ctx.code_graph`)
+- `handlers/link_commit.py` (+`_run_continuity_pass`, +`continuity_resolutions` field)
+- `contracts.py` (+`ContinuityResolution` model, +field on `LinkCommitResponse`)
+- `ledger/schema.py` (SCHEMA_VERSION 11→12; +`identity_supersedes` edge; +`neighbors_at_bind` field on `subject_identity`; +`_migrate_v11_to_v12`)
+- `ledger/queries.py` (+`update_binds_to_region`, `write_identity_supersedes`, `write_subject_version`, `relate_has_version`; extended `upsert_subject_identity` and `find_subject_identities_for_decision` for neighbors)
+- `ledger/adapter.py` (+5 thin wrappers + import additions)
+- `adapters/code_locator.py` (+`neighbors_for(file, start, end)` Phase-3 protocol method)
+
+**Content Hash**:
+SHA256(impl files concatenated by sorted path) = `64b1ed03cbdb76274df154f814cdc89bdd5b133d023fedd857b906dd475bbad8`
+
+**Previous Hash**: `e249fb8f...` (Entry #8, PASS verdict re-audit)
+
+**Chain Hash**:
+SHA256(content_hash + previous_hash) = `dc7ece4aa312c003361dae5464b551ec65f9349339bdc39bcf9f2eb9be4b3c36`
+
+**Test results**:
+- Codegenome unit + integration: **85 passed / 0 failed** (up from 49 in #59, +36 Phase 3 tests)
+- Section 4 razor self-check: **PASS** — all new functions ≤ 40 lines.
+  Mid-implement violation in `evaluate_continuity_for_drift` (65→52→47→39
+  lines) caught by Step 9 self-check; remediated by extracting helpers
+  (`_load_best_identity`, `_build_needs_review`, `_build_resolved`,
+  `_persist_resolved_match`) and bundling parameters into a
+  `DriftContext` dataclass to keep the function under the 40-line limit.
+- Full suite regression: **290 passed / 81 failed** (baseline 254 / 81).
+  Zero new failures; 81 pre-existing matches the #67–#70 cluster.
+
+**Pre-existing schema bug discovered** (filed as upstream issue):
+- BicameralAI/bicameral-mcp#72 — `binds_to.provenance` declared as
+  plain `TYPE object` (without `FLEXIBLE`) silently strips nested
+  metadata. Affects `relate_binds_to` in production
+  (`{"method": "caller_llm"}` provenance is dropped to `{}`) and the
+  new `update_binds_to_region` in this PR. Test for the
+  `provenance.method = "continuity_resolved"` assertion in
+  `test_codegenome_continuity_ledger.py` is documented-as-deferred
+  pending upstream schema fix; edge-swap behavior is verified.
+
+**Scope check**: Plan `plan-codegenome-phase-3.md` exit criteria:
+- [x] `SCHEMA_VERSION = 12`; migration registered; `init_schema` idempotent.
+- [x] All Phase 1, 2, 3 tests pass under `pytest tests/test_codegenome_*.py -v`.
+- [x] `pytest -m phase2` passes (no regression).
+- [x] Default off (flags both off): `LinkCommitResponse` shape + behavior identical.
+- [x] Flag on, exact-name match: `continuity_resolutions[0].semantic_status="identity_moved"`,
+      4 prerequisite ledger states asserted (V1/V2/V3 closed via integration tests).
+- [x] Logic-removal: `find_continuity_match` returns `None` (no false continuity).
+- [x] needs_review case at 0.50–0.75 confidence.
+- [x] Failure isolation: `find_continuity_match` raising → fall-through.
+- [x] Ledger module does NOT import from `codegenome` (one-way dep preserved).
+- [x] No new MCP tools registered.
+- [x] No `BindResponse`/`BindResult` field changes.
+- [x] Section 4 razor: every new function ≤ 40 lines.
+- [ ] M5 benchmark corpus — **DEFERRED** to backlog `[B4]`. Stubs in
+      unit/integration tests cover the scenarios; real-repo fixtures
+      enable the false-positive-rate benchmark and are in scope as a
+      follow-up PR before #61 starts.
+
+**Decision**: Reality matches Promise modulo the documented M5-corpus
+deferral. Plan executed; razor enforced; one upstream-bug discovery
+(#72) filed independently.
+
+---
+
+### Entry #10: SUBSTANTIATION (PHASE 3 SESSION SEAL)
+
+**Timestamp**: 2026-04-28T04:45:59Z
+**Phase**: SUBSTANTIATE
+**Author**: Judge (executed via `/qor-substantiate`)
+**Risk Grade**: L2
+**Verdict**: **REALITY = PROMISE**
+
+**Verifications run**:
+
+| Check | Result | Notes |
+|---|---|---|
+| Step 2 — PASS verdict present | ✅ | `.agent/staging/AUDIT_REPORT.md` (Phase 3 plan, chain hash `e249fb8f...`) |
+| Step 2.5 — Version validation | ✅ | Current tag `v0.10.7` → target `v0.12.0` (feature bump, additive); `SCHEMA_COMPATIBILITY[12] = "0.12.0"` placeholder |
+| Step 3 — Reality audit | ✅ | All 5 Phase 3 planned files exist; no missing; M5 fixture corpus deferred to BACKLOG `[B4]` (acknowledged) |
+| Step 3.5 — Blocker review | ⚠️ | Open: `[S1]` SECURITY.md missing (carries from Phase 1+2); `[D1]` SCHEMA_COMPATIBILITY[10] gap; new `[B4]` M5 fixtures. None block this seal. |
+| Step 4 — Functional verification | ✅ | 85 / 85 codegenome tests pass; full suite 290 / 81 (zero new failures vs Phase 1+2 baseline 254 / 81; +36 new Phase 3 tests passing) |
+| Step 4 — console.log scan | ✅ | No leftover debug prints in new code |
+| Step 4.5 — Skill file integrity | n/a | No skill files modified |
+| Step 4.6 — Reliability sweep | ⚠️ | qor/reliability/ scripts absent — capability shortfall logged in SYSTEM_STATE.md, sweep skipped |
+| Step 5 — Section 4 razor final | ✅ | All new functions ≤ 40 lines after substantiation-time razor regression caught + fixed (`write_codegenome_identity` 53→36 via `_compute_identity_for_bind` helper extraction) |
+| Step 6 — SYSTEM_STATE.md sync | ✅ | `docs/SYSTEM_STATE.md` updated with Phase 3 + cumulative state |
+| Step 7.5 — Annotated tag | ⚠️ | qor governance_helpers absent; tag deferred to release-eng at PR merge time |
+
+**Razor regression note**: Step 5 final-check on this seal caught
+`write_codegenome_identity` regressing from 36 lines (Phase 1+2 sealed
+state) to 53 lines after Phase 3 plumbing added the optional
+`code_locator` arg + branch. Remediated inline by extracting
+`_compute_identity_for_bind` helper and tightening the docstring; final
+size 36 lines. Razor commitment intact at session-seal time.
+
+**Session content hash** (34 files, sorted-path concatenation):
+SHA256 = `8a7e2bf5ddd2db532b272291a6f6b224306883d05c75873ddf1573efb776a18c`
+
+**Previous chain hash**: `dc7ece4a...` (Entry #9, IMPLEMENTATION)
+
+**Merkle seal**:
+SHA256(content_hash + previous_hash) = **`89cac7ff99a689b211955e68c6a688508287d3325df3737958556c41070237e2`**
+
+**Decision**: Reality matches Promise. Phase 3 implementation
+conforms to the audited plan; #60 exit criteria met (with M5 fixture
+corpus deferred to backlog `[B4]` per documented exception); razor
+regression caught and remediated at seal time; no new violations
+introduced.
+
+---
+*Chain integrity: VALID (10 entries)*
+*Genesis: `29dfd085` → Phase 1+2 Seal: `509b411d` → Phase 3 Seal: `89cac7ff`*
+*Next required action: amend razor-fix into commit + push + open PR #60 stacked on PR #71*

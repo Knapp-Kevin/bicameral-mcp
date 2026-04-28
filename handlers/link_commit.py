@@ -227,6 +227,46 @@ def invalidate_sync_cache(ctx) -> None:
         sync_state.pop("pending_flow_id", None)
 
 
+async def _run_continuity_pass(ctx, pending: list[PendingComplianceCheck]) -> list:
+    """Phase 3 (#60): per-region continuity resolution. Returns the list
+    of ``ContinuityResolution`` objects (empty when the flag is off, no
+    drifted regions, or evaluation raises). Suppression of the
+    PendingComplianceCheck list happens in the caller.
+    """
+    cg_config = getattr(ctx, "codegenome_config", None)
+    cg_adapter = getattr(ctx, "codegenome", None)
+    if cg_config is None or cg_adapter is None:
+        return []
+    if not (getattr(cg_config, "enabled", False) and getattr(cg_config, "enhance_drift", False)):
+        return []
+    if not pending:
+        return []
+
+    from codegenome.continuity_service import DriftContext, evaluate_continuity_for_drift
+
+    resolutions: list = []
+    for p in pending:
+        drift = DriftContext(
+            decision_id=p.decision_id, region_id=p.region_id,
+            old_file_path=p.file_path, old_symbol_name=p.symbol,
+            old_symbol_kind="unknown",
+            old_start_line=0, old_end_line=0,
+            repo_ref=getattr(ctx, "authoritative_sha", "") or "HEAD",
+            repo_path=ctx.repo_path,
+        )
+        try:
+            r = await evaluate_continuity_for_drift(
+                ledger=ctx.ledger, codegenome=cg_adapter, code_locator=ctx.code_graph,
+                drift=drift,
+            )
+        except Exception as exc:  # noqa: BLE001 — failure-isolated by design
+            logger.warning("[link_commit] continuity eval failed for region %s: %s", p.region_id, exc)
+            continue
+        if r is not None:
+            resolutions.append(r)
+    return resolutions
+
+
 async def handle_link_commit(ctx, commit_hash: str = "HEAD") -> LinkCommitResponse:
     # v0.4.8: short-circuit if we've already synced this SHA within this
     # MCP call. Returns the FULL cached response from the first sync so
@@ -271,6 +311,21 @@ async def handle_link_commit(ctx, commit_hash: str = "HEAD") -> LinkCommitRespon
     pending_raw = result.get("pending_compliance_checks", []) or []
     pending = [PendingComplianceCheck(**p) for p in pending_raw]
 
+    # Phase 3 (#60): when codegenome.enhance_drift is enabled, attempt
+    # continuity resolution for each drifted region BEFORE the caller
+    # sees the PendingComplianceCheck. Auto-resolved regions are removed
+    # from `pending`. Failure-isolated: any exception falls through to
+    # the existing PendingComplianceCheck flow with the response shape
+    # intact.
+    continuity_resolutions = await _run_continuity_pass(ctx, pending)
+    if continuity_resolutions:
+        resolved_region_ids = {
+            r.old_code_region_id for r in continuity_resolutions
+            if r.semantic_status in ("identity_moved", "identity_renamed")
+        }
+        if resolved_region_ids:
+            pending = [p for p in pending if p.region_id not in resolved_region_ids]
+
     pending_grounding_raw = result.get("pending_grounding_checks", []) or []
 
     has_action_items = bool(pending) or bool(pending_grounding_raw)
@@ -307,6 +362,7 @@ async def handle_link_commit(ctx, commit_hash: str = "HEAD") -> LinkCommitRespon
         verification_instruction=verification_text,
         flow_id=flow_id,
         ephemeral=is_ephemeral,
+        continuity_resolutions=continuity_resolutions,
     )
     _store_sync_cache(ctx, commit_hash, response)
 

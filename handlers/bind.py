@@ -158,6 +158,7 @@ async def _do_bind(ctx, bindings: list[dict]) -> BindResponse:
                         end_line=int(end_line),
                         repo_ref=authoritative_sha,
                         code_region_content_hash=content_hash,
+                        code_locator=getattr(ctx, "code_graph", None),
                     )
                 except Exception as exc:
                     logger.warning(

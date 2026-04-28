@@ -166,6 +166,25 @@ class PendingComplianceCheck(BaseModel):
     old_code_body: str | None = None    # drift-phase only
 
 
+class ContinuityResolution(BaseModel):
+    """Phase 3 (#60) — outcome of the continuity matcher per drifted region.
+
+    Emitted in ``LinkCommitResponse.continuity_resolutions`` when
+    ``codegenome.enhance_drift`` is enabled. ``identity_moved`` /
+    ``identity_renamed`` indicate auto-resolution (the binding was
+    redirected); ``needs_review`` indicates a 0.50–0.75 confidence
+    candidate the caller LLM should evaluate.
+    """
+    decision_id: str
+    old_code_region_id: str
+    new_code_region_id: str | None = None
+    semantic_status: Literal["identity_moved", "identity_renamed", "needs_review"]
+    confidence: float
+    old_location: CodeRegionSummary
+    new_location: CodeRegionSummary | None = None
+    rationale: str
+
+
 class LinkCommitResponse(BaseModel):
     """Returned by /link_commit and embedded in /search_decisions + /detect_drift."""
     commit_hash: str
@@ -187,6 +206,10 @@ class LinkCommitResponse(BaseModel):
     verification_instruction: str = ""
     flow_id: str = ""
     ephemeral: bool = False
+    # Phase 3 (#60) additive: continuity-matcher resolutions per drifted
+    # region. Empty when ``codegenome.enhance_drift`` is disabled or no
+    # drifted region produces a continuity match.
+    continuity_resolutions: list[ContinuityResolution] = []
 
 
 class ActionHint(BaseModel):
