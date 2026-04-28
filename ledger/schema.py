@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 #   - edges: yields(input_span→decision), binds_to(decision→code_region),
 #             locates(symbol→code_region)
 #   - removed: maps_to, implements
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Maps schema version → minimum bicameral-mcp code version that understands it.
 # Used to produce actionable "upgrade your binary" messages.
@@ -39,6 +39,7 @@ SCHEMA_COMPATIBILITY: dict[int, str] = {
     8: "0.9.0",
     9: "0.9.3",
     11: "0.11.0",   # placeholder; release-eng pins final value at PR merge
+    12: "0.12.0",   # placeholder; release-eng pins final value at PR merge
 }
 
 # Migrations that drop or recreate tables/data. These are never auto-applied;
@@ -254,6 +255,9 @@ _TABLES = [
     "ASSERT $value >= 0 AND $value <= 1",
     "DEFINE FIELD model_version        ON subject_identity TYPE string",
     "DEFINE FIELD created_at           ON subject_identity TYPE datetime DEFAULT time::now()",
+    # v12 (Phase 3): 1-hop call-graph neighbor addresses captured at bind
+    # time for the continuity matcher's Jaccard signal. None for pre-v12 rows.
+    "DEFINE FIELD neighbors_at_bind    ON subject_identity TYPE option<array<string>> DEFAULT NONE",
     "DEFINE INDEX idx_subject_identity_address ON subject_identity FIELDS address UNIQUE",
 
     # subject_version — concrete location/symbol observation at one
@@ -350,6 +354,24 @@ _EDGES = [
     "ASSERT $value >= 0 AND $value <= 1",
     "DEFINE FIELD created_at ON about TYPE datetime DEFAULT time::now()",
     "DEFINE INDEX idx_about_unique ON about FIELDS in, out UNIQUE",
+
+    # ── CodeGenome continuity edge (v12, Phase 3 / #60) ────────────────
+
+    # subject_identity → identity_supersedes → subject_identity
+    # Records identity transitions when the continuity matcher resolves a
+    # moved/renamed/moved_and_renamed symbol. Old identity is the OUT-of-scope
+    # row written at original bind time; new identity is the row written by
+    # Phase 3's auto-resolve sequence at link_commit time.
+    "DEFINE TABLE identity_supersedes SCHEMAFULL "
+    "TYPE RELATION IN subject_identity OUT subject_identity",
+    "DEFINE FIELD change_type   ON identity_supersedes TYPE string "
+    "ASSERT $value IN ['moved', 'renamed', 'moved_and_renamed']",
+    "DEFINE FIELD confidence    ON identity_supersedes TYPE float "
+    "ASSERT $value >= 0 AND $value <= 1",
+    "DEFINE FIELD evidence_refs ON identity_supersedes TYPE array<string> DEFAULT []",
+    "DEFINE FIELD created_at    ON identity_supersedes TYPE datetime DEFAULT time::now()",
+    "DEFINE INDEX idx_identity_supersedes_unique "
+    "ON identity_supersedes FIELDS in, out UNIQUE",
 ]
 
 # Schema version tracking
@@ -777,6 +799,35 @@ async def _migrate_v10_to_v11(client: LedgerClient) -> None:
 
 # Registry: version → migration function that brings DB from version-1 to version.
 # Pre-v4 migrations are removed; DBs older than v4 must be reset.
+async def _migrate_v11_to_v12(client: LedgerClient) -> None:
+    """v11 → v12: Add CodeGenome continuity infrastructure (#60).
+
+    Additive only — no data loss. Defines the new ``identity_supersedes``
+    edge table and adds a nullable ``neighbors_at_bind`` field to
+    ``subject_identity``. Existing rows have ``neighbors_at_bind = None``;
+    Phase 3's continuity matcher gracefully degrades for them (Jaccard
+    signal contributes zero, remaining weights renormalize via the
+    ``weighted_average`` helper).
+    """
+    new_stmts = [
+        "DEFINE FIELD neighbors_at_bind ON subject_identity TYPE option<array<string>> DEFAULT NONE",
+
+        "DEFINE TABLE identity_supersedes SCHEMAFULL "
+        "TYPE RELATION IN subject_identity OUT subject_identity",
+        "DEFINE FIELD change_type   ON identity_supersedes TYPE string "
+        "ASSERT $value IN ['moved', 'renamed', 'moved_and_renamed']",
+        "DEFINE FIELD confidence    ON identity_supersedes TYPE float "
+        "ASSERT $value >= 0 AND $value <= 1",
+        "DEFINE FIELD evidence_refs ON identity_supersedes TYPE array<string> DEFAULT []",
+        "DEFINE FIELD created_at    ON identity_supersedes TYPE datetime DEFAULT time::now()",
+        "DEFINE INDEX idx_identity_supersedes_unique "
+        "ON identity_supersedes FIELDS in, out UNIQUE",
+    ]
+    for sql in new_stmts:
+        await _execute_define_idempotent(client, sql.strip())
+    logger.info("[migration] v11 → v12: identity_supersedes edge + neighbors_at_bind field defined")
+
+
 _MIGRATIONS: dict[int, ...] = {
     5: _migrate_v4_to_v5,
     6: _migrate_v5_to_v6,
@@ -785,6 +836,7 @@ _MIGRATIONS: dict[int, ...] = {
     9: _migrate_v8_to_v9,
     10: _migrate_v9_to_v10,
     11: _migrate_v10_to_v11,
+    12: _migrate_v11_to_v12,
 }
 
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .client import LedgerClient
 from .queries import (
+    create_code_region,
     decision_exists,
     delete_binds_to_edge,
     find_subject_identities_for_decision,
@@ -24,6 +25,7 @@ from .queries import (
     get_decisions_for_file,
     get_decisions_for_files,
     get_pending_decisions_with_regions,
+    get_region_metadata,
     get_regions_for_files,
     get_regions_without_hash,
     get_source_cursor,
@@ -37,9 +39,11 @@ from .queries import (
     region_exists,
     relate_binds_to,
     relate_has_identity,
+    relate_has_version,
     relate_locates,
     relate_yields,
     search_by_bm25,
+    update_binds_to_region,
     update_decision_status,
     update_region_hash,
     upsert_code_region,
@@ -51,6 +55,8 @@ from .queries import (
     upsert_symbol,
     upsert_sync_state,
     upsert_vocab_cache,
+    write_identity_supersedes,
+    write_subject_version,
 )
 from .schema import DestructiveMigrationRequired, init_schema, migrate
 from .status import (
@@ -283,7 +289,12 @@ class SurrealDBLedgerAdapter:
         )
 
     async def upsert_subject_identity(self, identity) -> str:
-        """Persist a ``codegenome.adapter.SubjectIdentity`` and return its id."""
+        """Persist a ``codegenome.adapter.SubjectIdentity`` and return its id.
+
+        ``neighbors_at_bind`` (v12, Phase 3 / #60) is forwarded when set on
+        the dataclass; existing identities written before v12 don't carry
+        the field and persist as ``NONE``.
+        """
         await self._ensure_connected()
         return await upsert_subject_identity(
             self._client,
@@ -295,6 +306,7 @@ class SurrealDBLedgerAdapter:
             content_hash=identity.content_hash,
             confidence=identity.confidence,
             model_version=identity.model_version,
+            neighbors_at_bind=getattr(identity, "neighbors_at_bind", None),
         )
 
     async def relate_has_identity(
@@ -312,12 +324,28 @@ class SurrealDBLedgerAdapter:
         self,
         decision_id: str,
         code_subject_id: str,
+        region_id: str | None = None,
         confidence: float = 0.8,
     ) -> None:
+        """decision → about → code_subject. Pass ``region_id`` to preserve
+        the originating region on the edge (PR #73 review:
+        link_decision_to_subject must carry per-region disambiguation
+        so multi-region decisions don't flatten subjects across regions).
+        """
         await self._ensure_connected()
         await link_decision_to_subject(
-            self._client, decision_id, code_subject_id, confidence=confidence,
+            self._client, decision_id, code_subject_id,
+            region_id=region_id, confidence=confidence,
         )
+
+    async def get_region_metadata(self, region_id: str) -> dict | None:
+        """Phase 3 (#60) — load span + linked-identity kind for a region.
+
+        See ``ledger.queries.get_region_metadata``. Returns ``None`` if
+        the region doesn't exist.
+        """
+        await self._ensure_connected()
+        return await get_region_metadata(self._client, region_id)
 
     async def find_subject_identities_for_decision(
         self,
@@ -325,6 +353,107 @@ class SurrealDBLedgerAdapter:
     ) -> list[dict]:
         await self._ensure_connected()
         return await find_subject_identities_for_decision(self._client, decision_id)
+
+    # ── Phase 3 (#60) — continuity write path ─────────────────────────
+
+    async def upsert_code_region(
+        self,
+        file_path: str,
+        symbol_name: str,
+        start_line: int,
+        end_line: int,
+        purpose: str = "",
+        repo: str = "",
+        content_hash: str = "",
+    ) -> str:
+        """Always create a NEW ``code_region`` row, return its id.
+
+        Phase 3 (#60) continuity-resolution wrapper. PR #73 review
+        (CodeRabbit MAJOR ledger/adapter.py:365): the prior implementation
+        delegated to ``queries.upsert_code_region`` which keys on
+        ``(file_path, symbol_name)`` and silently reused IDs across
+        same-file moves. That broke the redirect contract — when a
+        symbol moved within the same file, ``update_binds_to_region``
+        couldn't tell old from new because both resolved to the same
+        region id and the old span was overwritten in place.
+
+        This wrapper now calls ``create_code_region`` (create-only) so
+        every continuity redirect targets a distinct new id.
+
+        Existing direct callers (``bind_decision``, ``ingest_payload``)
+        still call ``upsert_code_region`` from the queries module
+        directly when upsert semantics are appropriate; this adapter
+        method is the continuity-flow entry point only.
+
+        Method name retained for caller stability — the name describes
+        the role in the larger flow ("ensure a region exists for the
+        new bind target"), not the underlying CRUD verb.
+        """
+        await self._ensure_connected()
+        return await create_code_region(
+            self._client,
+            file_path=file_path, symbol_name=symbol_name,
+            start_line=start_line, end_line=end_line,
+            purpose=purpose, repo=repo, content_hash=content_hash,
+        )
+
+    async def update_binds_to_region(
+        self,
+        decision_id: str,
+        old_region_id: str,
+        new_region_id: str,
+        confidence: float = 0.85,
+    ) -> None:
+        await self._ensure_connected()
+        await update_binds_to_region(
+            self._client, decision_id, old_region_id, new_region_id,
+            confidence=confidence,
+        )
+
+    async def write_identity_supersedes(
+        self,
+        old_identity_id: str,
+        new_identity_id: str,
+        change_type: str,
+        confidence: float,
+        evidence_refs: tuple[str, ...] | list[str] = (),
+    ) -> None:
+        await self._ensure_connected()
+        await write_identity_supersedes(
+            self._client, old_identity_id, new_identity_id,
+            change_type, confidence, evidence_refs,
+        )
+
+    async def write_subject_version(
+        self,
+        code_subject_id: str,
+        repo_ref: str,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+        *,
+        symbol_name: str | None = None,
+        symbol_kind: str | None = None,
+        content_hash: str | None = None,
+        signature_hash: str | None = None,
+    ) -> str:
+        await self._ensure_connected()
+        return await write_subject_version(
+            self._client, code_subject_id, repo_ref, file_path, start_line, end_line,
+            symbol_name=symbol_name, symbol_kind=symbol_kind,
+            content_hash=content_hash, signature_hash=signature_hash,
+        )
+
+    async def relate_has_version(
+        self,
+        code_subject_id: str,
+        subject_version_id: str,
+        confidence: float = 0.9,
+    ) -> None:
+        await self._ensure_connected()
+        await relate_has_version(
+            self._client, code_subject_id, subject_version_id, confidence=confidence,
+        )
 
     async def lookup_vocab_cache(
         self,
