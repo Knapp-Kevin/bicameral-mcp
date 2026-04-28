@@ -1049,6 +1049,12 @@ def cli_main(argv: list[str] | None = None) -> int:
     parser = ArgumentParser(description="Bicameral MCP server")
     subparsers = parser.add_subparsers(dest="command")
 
+    # config subcommand
+    subparsers.add_parser(
+        "config",
+        help="interactive config editor — update mode, guided, and telemetry settings",
+    )
+
     # reset subcommand
     subparsers.add_parser(
         "reset",
@@ -1084,6 +1090,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         version=f"%(prog)s {SERVER_VERSION}",
     )
     args = parser.parse_args(argv)
+
+    if args.command == "config":
+        from setup_wizard import run_config_wizard
+        return run_config_wizard()
 
     if args.command == "reset":
         from setup_wizard import run_reset_wizard

@@ -733,6 +733,144 @@ def run_setup(repo_hint: str | None = None, history_hint: str | None = None) -> 
     return 0
 
 
+def run_config_wizard() -> int:
+    """Interactive CLI wizard for editing bicameral config.yaml.
+
+    Reads the current config, prompts for each setting via questionary,
+    writes updated config.yaml, and reinstalls skills/hooks so changes
+    take effect immediately.
+    """
+    import subprocess
+    import sys
+    try:
+        import yaml
+    except ImportError:
+        import json as yaml  # fallback: won't write yaml but will read
+
+    print()
+    print("  ┌─────────────────────────────────────────┐")
+    print("  │  Bicameral MCP — Config                  │")
+    print("  └─────────────────────────────────────────┘")
+    print()
+
+    repo_path = _detect_repo()
+    config_path = repo_path / ".bicameral" / "config.yaml"
+
+    # Read current values
+    if config_path.exists():
+        try:
+            cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            cfg = {}
+    else:
+        cfg = {}
+
+    cur_mode = cfg.get("mode", "team")
+    cur_guided = cfg.get("guided", True)
+    cur_telemetry = cfg.get("telemetry", True)
+
+    print(f"  Current config ({config_path}):")
+    print(f"    mode:      {cur_mode}")
+    print(f"    guided:    {cur_guided}")
+    print(f"    telemetry: {cur_telemetry}")
+    print()
+
+    new_mode = _select_collaboration_mode_with_default(cur_mode)
+    new_guided = _select_guided_mode_with_default(cur_guided)
+    new_telemetry = _select_telemetry_with_default(cur_telemetry)
+
+    # Write updated config
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "# Bicameral configuration\n"
+        f"mode: {new_mode}\n"
+        f"guided: {'true' if new_guided else 'false'}\n"
+        f"telemetry: {'true' if new_telemetry else 'false'}\n",
+        encoding="utf-8",
+    )
+
+    # Reinstall skills and hooks via subprocess (avoids stale sys.modules)
+    script = (
+        "from setup_wizard import _install_skills, _install_claude_hooks"
+        + (", _install_git_post_commit_hook" if new_guided else "")
+        + "; from pathlib import Path; "
+        f"rp = Path(r'{repo_path}'); "
+        "n = _install_skills(rp); _install_claude_hooks(rp); "
+        + ("_install_git_post_commit_hook(rp); " if new_guided else "")
+        + "print(n)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    skills_n = int(result.stdout.strip() or "0") if result.returncode == 0 else 0
+
+    print()
+    print("  Config updated:")
+    _print_change("mode", cur_mode, new_mode)
+    _print_change("guided", cur_guided, new_guided)
+    _print_change("telemetry", cur_telemetry, new_telemetry)
+    print(f"  Skills reinstalled: {skills_n}")
+    print(f"  Git post-commit hook: {'installed' if new_guided else 'not installed (Normal mode)'}")
+    print()
+    return 0
+
+
+def _print_change(label: str, old, new) -> None:
+    if old == new:
+        print(f"    {label}: {new}  (unchanged)")
+    else:
+        print(f"    {label}: {old} → {new}")
+
+
+def _select_collaboration_mode_with_default(current: str) -> str:
+    import questionary
+    if not _is_interactive():
+        return current
+    choices = [
+        questionary.Choice("Team  — decisions shared via git (append-only event files)", value="team"),
+        questionary.Choice("Solo  — decisions stored locally", value="solo"),
+    ]
+    result = questionary.select(
+        "Collaboration mode:",
+        choices=choices,
+        default=next((c for c in choices if c.value == current), choices[0]),
+    ).ask()
+    return result if result is not None else current
+
+
+def _select_guided_mode_with_default(current: bool) -> bool:
+    import questionary
+    if not _is_interactive():
+        return current
+    choices = [
+        questionary.Choice("Guided  — blocking hints + git post-commit hook", value=True),
+        questionary.Choice("Normal  — advisory hints only", value=False),
+    ]
+    result = questionary.select(
+        "Interaction intensity:",
+        choices=choices,
+        default=next((c for c in choices if c.value == current), choices[0]),
+    ).ask()
+    return result if result is not None else current
+
+
+def _select_telemetry_with_default(current: bool) -> bool:
+    import questionary
+    if not _is_interactive():
+        return current
+    choices = [
+        questionary.Choice("Yes  — share anonymous usage stats to improve Bicameral", value=True),
+        questionary.Choice("No   — keep telemetry off", value=False),
+    ]
+    result = questionary.select(
+        "Anonymous telemetry:",
+        choices=choices,
+        default=next((c for c in choices if c.value == current), choices[0]),
+    ).ask()
+    return result if result is not None else current
+
+
 def run_reset_wizard() -> int:
     """Interactive CLI wizard for bicameral.reset.
 
