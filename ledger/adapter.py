@@ -27,8 +27,10 @@ from .queries import (
     get_source_cursor,
     get_sync_state,
     get_undocumented_symbols,
+    has_prior_compliant_verdict,
     lookup_vocab_cache,
     project_decision_status,
+    promote_ephemeral_verdict,
     region_exists,
     relate_binds_to,
     relate_locates,
@@ -80,6 +82,30 @@ def _extract_code_body(
 
 
 _MAX_SWEEP_FILES = 200
+
+
+def _get_branch_delta_files(authoritative_ref: str, commit_hash: str, repo_path: str) -> list[str]:
+    """Return files changed between the merge base of authoritative_ref and commit_hash.
+
+    Uses `git diff <auth>...HEAD --name-only` (three-dot diff = merge-base to HEAD).
+    Covers all files modified on the feature branch, not just the HEAD commit.
+    Returns [] if the command fails or authoritative_ref is unreachable.
+    """
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            ["git", "diff", f"{authoritative_ref}...{commit_hash}", "--name-only"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+        return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    except Exception:
+        return []
+
 
 logger = logging.getLogger(__name__)
 
@@ -356,6 +382,20 @@ class SurrealDBLedgerAdapter:
             changed_files = get_changed_files(commit_hash, repo_path)
             sweep_scope = "head_only"
 
+        # V2: branch-delta sweep for non-authoritative branches.
+        # When no prior cursor exists (cold start on feature branch), head-only
+        # sweep only covers the HEAD commit. git diff <auth>...HEAD covers ALL
+        # files changed on the branch since the merge base — catches drift from
+        # earlier feature commits whose files aren't touched in HEAD.
+        if not is_authoritative and authoritative_ref:
+            delta_files = _get_branch_delta_files(authoritative_ref, commit_hash, repo_path)
+            if delta_files:
+                existing = set(changed_files)
+                new_files = [f for f in delta_files if f not in existing]
+                if new_files:
+                    changed_files = changed_files + new_files
+                    sweep_scope = "branch_delta"
+
         range_size = len(changed_files)
 
         if not changed_files:
@@ -411,6 +451,8 @@ class SurrealDBLedgerAdapter:
             actual_hash = drift_result.content_hash
 
             # Check if symbol has disappeared from the new commit.
+            # Pollution guard: only update code_region.content_hash from authoritative
+            # commits. Branch content must not overwrite the stable main baseline.
             symbol_disappeared = False
             if is_authoritative:
                 await update_region_hash(self._client, region_id, actual_hash, commit_hash)
@@ -475,10 +517,34 @@ class SurrealDBLedgerAdapter:
                 new_status = derive_status(stored_hash, actual_hash, cached_verdict=verdict)
 
                 if is_authoritative:
-                    # v0.5.0: use project_decision_status for holistic aggregation
+                    # V2: promote ephemeral verdict when same hash lands on authoritative branch
+                    if actual_hash:
+                        await promote_ephemeral_verdict(self._client, decision_id, region_id, actual_hash)
+                    # v0.5.0: holistic status projection from DB
                     projected = await project_decision_status(self._client, decision_id)
                     await update_decision_status(self._client, decision_id, projected)
                     new_status = projected
+                else:
+                    # V2: feature branch — derive status locally from actual_hash vs stored_hash.
+                    # project_decision_status reads code_region.content_hash from DB, but we
+                    # don't update it on feature branches (pollution guard). Instead, compute
+                    # status directly: if hash changed and prior compliant verdict exists → drifted.
+                    if not actual_hash or not stored_hash:
+                        fb_status = "pending"
+                    elif actual_hash == stored_hash:
+                        if verdict is not None and not verdict.get("pruned"):
+                            fb_status = "reflected" if verdict.get("verdict") == "compliant" else "drifted"
+                        elif await has_prior_compliant_verdict(self._client, decision_id, region_id):
+                            fb_status = "drifted"
+                        else:
+                            fb_status = "pending"
+                    else:
+                        if await has_prior_compliant_verdict(self._client, decision_id, region_id):
+                            fb_status = "drifted"
+                        else:
+                            fb_status = "pending"
+                    await update_decision_status(self._client, decision_id, fb_status)
+                    new_status = fb_status
 
                 if new_status == "reflected" and old_status != "reflected":
                     flipped_to_reflected.add(decision_id)

@@ -770,6 +770,29 @@ async def upsert_compliance_check(
         return False
 
 
+async def promote_ephemeral_verdict(
+    client: LedgerClient,
+    decision_id: str,
+    region_id: str,
+    content_hash: str,
+) -> bool:
+    """Flip ephemeral=False for any compliance_check row for (d,r,h) with ephemeral=True.
+
+    Called when the same content hash that was first written on a feature branch
+    (ephemeral=True) is confirmed to exist on the authoritative branch or in a
+    non-ephemeral resolve_compliance call.
+    """
+    try:
+        await client.execute(
+            "UPDATE compliance_check SET ephemeral = false "
+            "WHERE decision_id = $d AND region_id = $r AND content_hash = $h AND ephemeral = true",
+            {"d": decision_id, "r": region_id, "h": content_hash},
+        )
+        return True
+    except Exception:
+        return False
+
+
 async def decision_exists(client: LedgerClient, decision_id: str) -> bool:
     """Return True iff a decision row exists with the given record id."""
     rows = await client.query(f"SELECT id FROM {decision_id} LIMIT 1")

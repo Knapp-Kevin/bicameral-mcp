@@ -179,6 +179,7 @@ class LinkCommitResponse(BaseModel):
         "head_only",
         "range_diff",
         "range_truncated",
+        "branch_delta",
     ] = "head_only"
     range_size: int = 0
     pending_compliance_checks: list[PendingComplianceCheck] = []
@@ -252,7 +253,7 @@ class ScanBranchResponse(BaseModel):
     """
     base_ref: str
     head_ref: str
-    sweep_scope: Literal["head_only", "range_diff", "range_truncated"]
+    sweep_scope: Literal["head_only", "range_diff", "range_truncated", "branch_delta"]
     range_size: int = 0
     source: Literal["working_tree", "HEAD"]
     decisions: list[DriftEntry] = []

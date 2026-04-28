@@ -22,18 +22,18 @@ Scenario matrix:
   E3  — fast-forward merge → verdict survives same hash                   [PASS]
   E4  — squash merge → same content hash → reflected                      [PASS]
   E5  — content change → drifted (prior compliant verdict exists)         [PASS]
-  E6  — branch switch A→diverged B → stale not cleared                  [xfail V2]
-  E7  — feature→main after merge → ephemeral not promoted               [xfail V2]
+  E6  — branch switch A→diverged B → status drifted (V2: hash update ungated)  [PASS V2]
+  E7  — feature→main after merge → ephemeral promoted to False          [PASS V2]
   E8  — detached HEAD → non-ephemeral (safe default)                      [PASS]
   E9  — process restart → flag lost, status still correct                 [PASS]
   E10 — idempotent resolve_compliance (UNIQUE upsert)                     [PASS]
   E11 — flow_id mismatch → ephemeral=False, status still correct          [PASS]
-  E12 — first feature-branch sync, no cursor → head_only only           [xfail V2]
+  E12 — branch-delta sweep detects drift from earlier feature commits   [PASS V2]
   E13 — rebase onto main: same content, new SHA → verdict carries over    [PASS]
   E14 — deleted branch → verdict survives (hash-keyed)                    [PASS]
   E15 — authoritative_ref="" → degraded safe mode, ephemeral=False        [PASS]
   E16 — resolve_compliance without prior link_commit → reflected          [PASS]
-  E17 — ephemeral first-write-wins blocks non-ephemeral flag             [xfail V2]
+  E17 — ephemeral first-write-wins → promoted by resolve_compliance      [PASS V2]
 """
 from __future__ import annotations
 
@@ -511,51 +511,80 @@ async def test_e05_content_change_becomes_drifted(_eph_repo):
 # ── E6: Branch switch → stale ephemeral not cleared [xfail V2] ────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "V2: branch-switch invalidation not implemented. "
-        "When the active branch diverges from the last-synced branch, stale "
-        "ephemeral verdicts from the old branch should be invalidated. "
-        "V2 will track branch_name on compliance_check and prune stale rows "
-        "when a new branch is detected at session start."
-    ),
-)
 @pytest.mark.phase2
 @pytest.mark.asyncio
 async def test_e06_branch_switch_stale_not_cleared(_eph_repo):
-    """[xfail V2] Switching between diverged feature branches leaves stale verdicts.
+    """[PASS V2] Switching to a diverged feature branch surfaces stale verdict as 'drifted'.
 
-    V2 must invalidate ephemeral verdicts when the session moves to a branch
-    whose HEAD is not a descendant of the branch that produced them.
+    V2 removes the is_authoritative gate from update_region_hash and
+    project_decision_status, so on feature-B:
+    - code_region.content_hash is updated to H_B (rate 25%)
+    - project_decision_status: no verdict for H_B, but prior compliant (H_A) → 'drifted'
+
+    This replaces the stale 'reflected' that V1 returned (verdict looked up by H_A,
+    which was still stored in code_region.content_hash after skipping update_region_hash).
+
+    Invariants:
+    - feature-A: reflected (H_A = 15%)
+    - switch to diverged feature-B (H_B = 25%)
+    - link_commit on feature-B → status = 'drifted' (not stale 'reflected')
     """
-    pytest.fail(
-        "V2: branch-switch invalidation not yet implemented — "
-        "stale ephemeral verdicts from diverged branches accumulate"
+    repo = _eph_repo
+
+    # feature-A: establish 'reflected' for rate 15%.
+    _checkout(repo, "feat/branch-a", create=True)
+    (repo / "src/calc.py").write_text(
+        "def rate(order_total: float) -> float:\n    return order_total * 0.15\n"
+    )
+    _commit(repo, "branch-A: rate 15%")
+
+    ctx = BicameralContext.from_env()
+    ingest = await handle_ingest(
+        ctx,
+        _payload(repo, text="Rate policy", intent="Apply 15% rate",
+                 code_regions=[{
+                     "file_path": "src/calc.py",
+                     "symbol": "rate",
+                     "start_line": 1, "end_line": 2,
+                     "type": "function", "purpose": "rate",
+                 }]),
+    )
+    decision_id = ingest.created_decisions[0].decision_id
+    lc_a = await handle_link_commit(ctx, "HEAD")
+    rc = await _resolve_verdict(ctx, lc_a, decision_id)
+    assert rc.accepted
+    assert await _get_decision_status(ctx, decision_id) == "reflected"
+
+    # Switch to feature-B (diverged from main, not from feature-A).
+    _checkout(repo, "main")
+    _checkout(repo, "feat/branch-b", create=True)
+    (repo / "src/calc.py").write_text(
+        "def rate(order_total: float) -> float:\n    return order_total * 0.25\n"
+    )
+    _commit(repo, "branch-B: rate 25%")
+
+    invalidate_sync_cache(ctx)
+    lc_b = await handle_link_commit(ctx, "HEAD")
+
+    # V2: update_region_hash now unconditional → H_B stored.
+    # project_decision_status: no verdict for H_B, prior compliant (H_A) → 'drifted'.
+    status_on_b = await _get_decision_status(ctx, decision_id)
+    assert status_on_b == "drifted", (
+        f"After switching to diverged feature-B, status must be 'drifted' "
+        f"(stale 'reflected' from feature-A cleared), got {status_on_b}"
     )
 
 
 # ── E7: Feature → main after merge → ephemeral not promoted [xfail V2] ────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "V2: ephemeral promotion not implemented. "
-        "When a feature branch merges to main and the content hash is the "
-        "same, the stored compliance_check.ephemeral=True should be updated "
-        "to False to reflect that the verdict now covers authoritative code. "
-        "V2 will detect this via git merge-base comparison and issue an UPDATE."
-    ),
-)
 @pytest.mark.phase2
 @pytest.mark.asyncio
 async def test_e07_feature_to_main_ephemeral_not_promoted(_eph_repo):
-    """[xfail V2] After FF-merge, compliance_check.ephemeral stays True (not promoted).
+    """[PASS V2] After FF-merge, compliance_check.ephemeral is promoted from True to False.
 
-    The verdict survives (E3 covers this) but the ephemeral flag is wrong —
-    it remains True even after the hash lands on the authoritative branch.
-    V2 should update ephemeral=False when the same hash is confirmed on main.
+    V2: promote_ephemeral_verdict called in ingest_commit when is_authoritative=True
+    flips the stored ephemeral=True row to False when the hash lands on main.
     """
     repo = _eph_repo
 
@@ -852,33 +881,20 @@ async def test_e11_flow_id_mismatch_ephemeral_false_status_ok(_eph_repo):
 # ── E12: First feature-branch sync, no cursor → head_only [xfail V2] ──────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "V2: branch-delta sweep not implemented. "
-        "A 'reflected' decision whose code changes on a feature branch via an "
-        "earlier commit is silently missed when the CURRENT HEAD (no prior cursor) "
-        "touches a different file: the head-only sweep misses calc.py, and the "
-        "stale-pending sweep skips 'reflected' decisions. "
-        "V2 will add a `git diff <auth>...HEAD` sweep to catch these drift cases."
-    ),
-)
 @pytest.mark.phase2
 @pytest.mark.asyncio
 async def test_e12_feature_branch_reflected_drift_not_detected(_eph_repo):
-    """[xfail V2] A 'reflected' decision's code change on a feature branch is not
-    detected when a SECOND feature commit (different file) becomes HEAD.
+    """[PASS V2] Branch-delta sweep detects calc.py drift even when HEAD commit is helper.py.
+
+    V2 adds `git diff <auth>...HEAD --name-only` sweep after the head-only sweep.
+    This covers all files changed on the branch since the merge base, catching
+    calc.py (from commit 2) even though HEAD is the helper.py commit.
 
     Setup:
-      - Start on feature branch (no prior sync cursor on this branch)
-      - Commit 1: change calc.py (the tracked file) → pending check surfaced
-      - resolve_compliance → decision becomes 'reflected'
-      - Commit 2: change calc.py AGAIN (drift vs first feature verdict)
+      - Commit 1: change calc.py → verify → 'reflected' for H_20%
+      - Commit 2: change calc.py to H_30% (drift vs reflected verdict)
       - Commit 3: add helper.py (becomes HEAD — different file)
-      - link_commit(HEAD): head-only sweep → only helper.py → calc.py missed
-
-    The stale-pending sweep doesn't help here because the decision is 'reflected'
-    (not 'pending'). This is the silent drift gap in V1.
+      - link_commit(HEAD, no prior cursor): branch-delta adds calc.py → drift detected
     """
     repo = _eph_repo
 
@@ -1201,28 +1217,14 @@ async def test_e16_resolve_compliance_without_link_commit(_eph_repo):
 # ── E17: Ephemeral first-write-wins blocks non-ephemeral flag [xfail V2] ──────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "V2: ephemeral first-write-wins not guarded. "
-        "When a compliance_check is written with ephemeral=True and the same "
-        "(decision_id, region_id, content_hash) later arrives from the "
-        "authoritative branch, the stored ephemeral=True flag is never updated. "
-        "V2 will issue an UPDATE to flip ephemeral=False when the hash lands on main."
-    ),
-)
 @pytest.mark.phase2
 @pytest.mark.asyncio
 async def test_e17_ephemeral_first_write_wins_flag_stuck(_eph_repo):
-    """[xfail V2] Ephemeral=True verdict can't be overwritten by non-ephemeral call.
+    """[PASS V2] promote_ephemeral_verdict flips ephemeral=True to False on main confirmation.
 
-    Because upsert_compliance_check uses CREATE with a UNIQUE(d,r,h) index,
-    the first write wins. If a feature branch writes ephemeral=True first,
-    and then main later confirms the same hash, the record stays ephemeral=True
-    permanently — the main branch's confirmation is silently dropped.
-
-    V2 must UPDATE ephemeral=False when the same hash lands on the authoritative
-    branch (detect via _is_ephemeral_commit returning False).
+    V2: resolve_compliance calls promote_ephemeral_verdict before upsert_compliance_check
+    when is_ephemeral=False. The UPDATE fires before the CREATE no-ops, flipping the
+    existing ephemeral=True row to False.
     """
     repo = _eph_repo
 
