@@ -116,6 +116,37 @@ async def _do_bind(ctx, bindings: list[dict]) -> BindResponse:
         region_id = bind_result["region_id"]
         content_hash = bind_result["content_hash"]
 
+        # CodeGenome identity write (#59) — side-effect only, off by
+        # default. Failure here must not change the bind response
+        # contract; caller behavior is identical whether the flag is on
+        # or off.
+        cg_config = getattr(ctx, "codegenome_config", None)
+        cg_adapter = getattr(ctx, "codegenome", None)
+        if (
+            cg_config is not None
+            and cg_adapter is not None
+            and getattr(cg_config, "identity_writes_active", lambda: False)()
+        ):
+            from codegenome.bind_service import write_codegenome_identity
+            try:
+                await write_codegenome_identity(
+                    ledger=ledger,
+                    codegenome=cg_adapter,
+                    decision_id=decision_id,
+                    file_path=file_path,
+                    symbol_name=symbol_name,
+                    symbol_kind="unknown",
+                    start_line=int(start_line),
+                    end_line=int(end_line),
+                    repo_ref=authoritative_sha,
+                    code_region_content_hash=content_hash,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[bind] codegenome identity write failed for %s: %s",
+                    decision_id, exc,
+                )
+
         pending_check = None
         if content_hash:
             try:
