@@ -1,9 +1,20 @@
 # Plan: CodeGenome Phase 4 — Semantic Drift Evaluation in `resolve_compliance` (M3)
 
 **Issue:** [BicameralAI/bicameral-mcp#61](https://github.com/BicameralAI/bicameral-mcp/issues/61)
-**Branch:** `claude/codegenome-phase-4-qor` (stacked on Phase 3 / PR #73)
+**Branch:** `claude/codegenome-phase-4-qor` (rebased onto `dev` after PR #73 merged)
+**Merge target:** `BicameralAI/dev` (NOT main — per the new dev-integration workflow; Jin batches `dev → main` separately)
 **Risk Grade:** L2 (modifies existing tool surface, adds schema fields, adds handler logic)
-**Revision:** v2 — addresses VETO findings F1–F5 + observations O1–O5 from `.agent/staging/AUDIT_REPORT.md` (META_LEDGER Entry #11, chain hash `231fe5f1`).
+**Revision:** v3 — refresh after Phase 3 merged. Phase 1 of Phase 4 is **DONE** (commit `2afd52d`); Phases 2-5 remain. Carries forward all v2 design decisions (F1-F5 + O1-O5 sealed in v2 audit PASS, META_LEDGER Entry #12, chain hash `332c72b2`).
+
+## What's changed since v2 plan
+
+- **PR #71 (Phase 1+2) merged to upstream `main`** at 2026-04-28T19:55:40Z.
+- **PR #73 (Phase 3) merged to `dev`** at 2026-04-28T20:59:56Z with all 17 CodeRabbit + Devin review items addressed in commit `f9049fa`.
+- **`dev` integration branch live** on both `BicameralAI/bicameral-mcp` and the `Knapp-Kevin/bicameral-mcp` fork. CI workflows (`MCP Regression Tests`, `Preflight Failure-Mode Eval`, `Schema Persistence Tests`) updated to trigger on `pull_request: branches: [main, dev]` (commit `169722f` on dev).
+- **Phase 4 branch rebased** onto current `dev` (single-base; the previous 3-deep stack `Phase 1+2 → Phase 3 → Phase 4` is collapsed).
+- **Phase 1 sealed** — schema v13 migration, contracts (`PreClassificationHint`, extended `ComplianceVerdict` / `PendingComplianceCheck` / `LinkCommitResponse` / `ResolveComplianceAccepted`), and 9 persistence tests all green at commit `2afd52d`. Local regression: 146/146 pass.
+- **Obs-V2-1 resolved positively** — `SHOW CHANGES FOR TABLE compliance_check SINCE 1` works in SurrealDB v2 embedded; F1 changefeed regression tests pass without xfail. The fallback caveat from v2 plan is removed.
+- **Obs-V2-2 still pending** — F3 parity test must still guard `_USE_LEGACY` mode where `_LANG_PACKAGE_MAP` isn't defined; carry into Phase 2 implementation.
 
 ## Risk Assessment
 
@@ -42,7 +53,15 @@ Match upstream `.github/workflows/test-mcp-regression.yml`:
 
 ---
 
-## Phase 1: Schema + contracts
+## Phase 1: Schema + contracts ✅ **DONE** (commit `2afd52d`)
+
+**Status:** sealed, 9/9 tests passing, 146/146 broader regression clean. Artifacts:
+- `ledger/schema.py` v12 → v13 — `compliance_check` redefined with `CHANGEFEED 30d INCLUDE ORIGINAL`; `semantic_status` (option<string>, ASSERT enum `['semantically_preserved', 'semantic_change']`) and `evidence_refs` (array<string>) added. `_migrate_v12_to_v13` registered.
+- `ledger/queries.py::upsert_compliance_check` extended with optional `semantic_status` + `evidence_refs` kwargs.
+- `contracts.py` — new `PreClassificationHint`; extended `ComplianceVerdict`, `ResolveComplianceAccepted`, `PendingComplianceCheck` (with `pre_classification: PreClassificationHint | None = None`), `LinkCommitResponse` (`auto_resolved_count: int = 0` per O1).
+- `tests/test_codegenome_resolve_compliance_persistence.py` — 9 tests covering migration additivity, CHANGEFEED retrofit, changefeed records overwritten rows, F2 dropped enum value rejection, persistence round-trip, legacy-caller backward compat.
+
+The test plan summary, razor pre-check, and risk table sections below are kept intact for chain integrity. Phases 2-5 are the remaining implementation queue.
 
 ### Affected Files
 
@@ -657,10 +676,11 @@ Every new function targeted ≤ 40 lines; entry points (`classify_drift`, `evalu
 
 ## Dependencies
 
-- **Phase 1+2 (#71)** — required: `subject_identity.signature_hash` and `compliance_check` table.
-- **Phase 3 (#73)** — soft-required: `subject_identity.neighbors_at_bind`. If Phase 3 hasn't merged, the neighbors signal returns 0.5 (unknown weight) for legacy bindings and Phase 4 still functions, just at lower precision on M3.
+- **Phase 1+2 (#71)** — required: `subject_identity.signature_hash` and `compliance_check` table. **Now in `dev`** (squash-merged via #71 → main → dev).
+- **Phase 3 (#73)** — required for full M3 precision: `subject_identity.neighbors_at_bind` + the continuity-resolved auto-redirect path. **Now in `dev`** (merged 2026-04-28T20:59:56Z, commit `f9049fa` includes the 17 review fixes).
 - **Section 4 razor** — every function ≤ 40 lines, every file ≤ 250 lines (per `CLAUDE.md`).
-- **CLAUDE.md "Tool Changes Require Skill Changes" rule** — Phase 4 changes the `LinkCommitResponse` shape (new `auto_resolved_count` field, optional `pre_classification` on each pending) AND `resolve_compliance` contract (new optional verdict fields). Skill files in `pilot/mcp/skills/bicameral-resolve-compliance/SKILL.md` and `bicameral-link-commit/SKILL.md` must be updated in the same commit.
+- **CLAUDE.md "Tool Changes Require Skill Changes" rule** — Phase 4 changes the `LinkCommitResponse` shape (new `auto_resolved_count` field — DONE in Phase 1; optional `pre_classification` on each pending — also DONE in Phase 1) AND `resolve_compliance` contract (new optional verdict fields — DONE in Phase 1 contracts). Skill files in `skills/bicameral-resolve-compliance/SKILL.md` and `skills/bicameral-sync/SKILL.md` (the active link-commit skill, per Phase 3 review) must be updated **when Phase 4 wires the actual handler logic** in Phase 4 of the plan (next implementation chunk).
+- **Phase 1 of Phase 4** — schema v13 + contracts, sealed at commit `2afd52d`. Phases 2-5 build on this foundation.
 
 ## QOR audit gates this plan will pass through
 
@@ -669,8 +689,26 @@ Every new function targeted ≤ 40 lines; entry points (`classify_drift`, `evalu
 3. **`/qor-substantiate`** — full regression run after every phase. Hard gate before opening the PR.
 4. **`/qor-document`** — update `docs/SYSTEM_STATE.md`, `docs/META_LEDGER.md`, and the two SKILL.md files (`pilot/mcp/skills/bicameral-link-commit/SKILL.md`, `pilot/mcp/skills/bicameral-resolve-compliance/SKILL.md`). The new test files DO introduce `MagicMock`/`AsyncMock` of `ledger`, `codegenome`, and `code_locator` adapters, but per O4 the `mocks/README.md` auto-tick rule applies only to first-class mock IMPLEMENTATIONS being replaced by real ones. Test-only mocks scoped to a single `tests/test_*.py` file do NOT need a `mocks/README.md` entry; they're pytest fixtures, not standalone mock packages. State this explicitly in the documentation pass.
 
-## Stacking + merge strategy
+## Stacking + merge strategy (refreshed v3)
 
-This branch (`claude/codegenome-phase-4-qor`) is currently stacked on `claude/codegenome-phase-3-qor` (PR #73), which is stacked on `claude/codegenome-phase-1-2-qor` (PR #71). PRs land in order: #71 → #73 → Phase 4 PR. Each rebase to the next-base happens once the parent merges; the 3-deep stack is the same pattern that worked for Phases 1+2 → 3.
+The 3-deep stack from v2 is collapsed. Current state:
 
-After Phase 4's PR opens, the user has requested a `dev` branch from `BicameralAI/main` to serve as the long-lived development integration target for future feature work. That migration is the next step after this Phase 4 cycle — out of scope for this plan.
+- `claude/codegenome-phase-4-qor` is rebased onto `BicameralAI/dev` directly. Single base, no intermediate stacking.
+- `dev` already contains both Phase 1+2 (squash-merged via #71) and Phase 3 (squash-merged via #73, including the 17-item review hardening from `f9049fa`).
+- Phase 4's PR will target **`BicameralAI/dev`**, NOT `main`. The `dev → main` aggregate PR is downstream and is Jin's call when the batch is ready for upstream main.
+
+The user previously held PR #81 (provenance FLEXIBLE) due to schema-version conflict with PR #73; now that #73 has merged claiming v12, **#81 needs a rebase** to pick the next available version (v13 if Phase 4 Phase 1 hasn't merged yet, v14 otherwise). That rebase is independent of this plan but worth noting because the schema version a Phase 4 caller observes depends on which migration sequence executes.
+
+## Implementation queue (Phases 2-5)
+
+| Phase | Files | Tests | LOC | Status |
+|------:|------:|------:|----:|---|
+| 2 — Drift classifier (multi-language) + line categorizers + call_site_extractor | 14 | 32 | ~1100 | pending |
+| 3 — Drift classification service | 2 | 8 | ~340 | pending |
+| 4 — Handler integration (`link_commit` + `resolve_compliance`) | 6 | 14 | ~330 | pending |
+| 5 — M3 benchmark fixture corpus (30 fixtures across 7 languages) + integration test | 31 (30 fixture pairs + 1 test runner) | 5 | ~80 + ~600 fixture | pending |
+| **Total remaining** | **~53** | **59** | **~2450** | |
+
+Phase 1 (already done, commit `2afd52d`) added 3 modified + 1 new file with 9 tests, ~145 LOC.
+
+After Phase 4 ships and the `dev → main` PR is opened by Jin's call, this issue (#61) closes the assigned codegenome trilogy (#59 / #60 / #61).
