@@ -28,9 +28,11 @@ from .queries import (
     get_source_cursor,
     get_sync_state,
     get_undocumented_symbols,
+    has_prior_compliant_verdict,
     link_decision_to_subject,
     lookup_vocab_cache,
     project_decision_status,
+    promote_ephemeral_verdict,
     region_exists,
     relate_binds_to,
     relate_has_identity,
@@ -57,6 +59,7 @@ from .status import (
     get_changed_files_in_range,
     get_git_content,
     resolve_head,
+    resolve_ref,
 )
 
 
@@ -84,6 +87,30 @@ def _extract_code_body(
 
 
 _MAX_SWEEP_FILES = 200
+
+
+def _get_branch_delta_files(authoritative_ref: str, commit_hash: str, repo_path: str) -> list[str]:
+    """Return files changed between the merge base of authoritative_ref and commit_hash.
+
+    Uses `git diff <auth>...HEAD --name-only` (three-dot diff = merge-base to HEAD).
+    Covers all files modified on the feature branch, not just the HEAD commit.
+    Returns [] if the command fails or authoritative_ref is unreachable.
+    """
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            ["git", "diff", f"{authoritative_ref}...{commit_hash}", "--name-only"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+        return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    except Exception:
+        return []
+
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +453,20 @@ class SurrealDBLedgerAdapter:
             changed_files = get_changed_files(commit_hash, repo_path)
             sweep_scope = "head_only"
 
+        # V2: branch-delta sweep for non-authoritative branches.
+        # When no prior cursor exists (cold start on feature branch), head-only
+        # sweep only covers the HEAD commit. git diff <auth>...HEAD covers ALL
+        # files changed on the branch since the merge base — catches drift from
+        # earlier feature commits whose files aren't touched in HEAD.
+        if not is_authoritative and authoritative_ref:
+            delta_files = _get_branch_delta_files(authoritative_ref, commit_hash, repo_path)
+            if delta_files:
+                existing = set(changed_files)
+                new_files = [f for f in delta_files if f not in existing]
+                if new_files:
+                    changed_files = changed_files + new_files
+                    sweep_scope = "branch_delta"
+
         range_size = len(changed_files)
 
         if not changed_files:
@@ -481,6 +522,8 @@ class SurrealDBLedgerAdapter:
             actual_hash = drift_result.content_hash
 
             # Check if symbol has disappeared from the new commit.
+            # Pollution guard: only update code_region.content_hash from authoritative
+            # commits. Branch content must not overwrite the stable main baseline.
             symbol_disappeared = False
             if is_authoritative:
                 await update_region_hash(self._client, region_id, actual_hash, commit_hash)
@@ -545,10 +588,34 @@ class SurrealDBLedgerAdapter:
                 new_status = derive_status(stored_hash, actual_hash, cached_verdict=verdict)
 
                 if is_authoritative:
-                    # v0.5.0: use project_decision_status for holistic aggregation
+                    # V2: promote ephemeral verdict when same hash lands on authoritative branch
+                    if actual_hash:
+                        await promote_ephemeral_verdict(self._client, decision_id, region_id, actual_hash)
+                    # v0.5.0: holistic status projection from DB
                     projected = await project_decision_status(self._client, decision_id)
                     await update_decision_status(self._client, decision_id, projected)
                     new_status = projected
+                else:
+                    # V2: feature branch — derive status locally from actual_hash vs stored_hash.
+                    # project_decision_status reads code_region.content_hash from DB, but we
+                    # don't update it on feature branches (pollution guard). Instead, compute
+                    # status directly: if hash changed and prior compliant verdict exists → drifted.
+                    if not actual_hash or not stored_hash:
+                        fb_status = "pending"
+                    elif actual_hash == stored_hash:
+                        if verdict is not None and not verdict.get("pruned"):
+                            fb_status = "reflected" if verdict.get("verdict") == "compliant" else "drifted"
+                        elif await has_prior_compliant_verdict(self._client, decision_id, region_id):
+                            fb_status = "drifted"
+                        else:
+                            fb_status = "pending"
+                    else:
+                        if await has_prior_compliant_verdict(self._client, decision_id, region_id):
+                            fb_status = "drifted"
+                        else:
+                            fb_status = "pending"
+                    await update_decision_status(self._client, decision_id, fb_status)
+                    new_status = fb_status
 
                 if new_status == "reflected" and old_status != "reflected":
                     flipped_to_reflected.add(decision_id)
@@ -602,32 +669,27 @@ class SurrealDBLedgerAdapter:
         try:
             already_covered = {c["region_id"] for c in pending_checks}
             stale_pending = await get_pending_decisions_with_regions(self._client)
-            for d in stale_pending:
-                desc = str(d.get("description", ""))
-                d_id = str(d.get("decision_id", ""))
-                for region in (d.get("regions") or []):
-                    if not isinstance(region, dict):
-                        continue
-                    region_id = str(region.get("region_id", ""))
-                    if not region_id or region_id in already_covered:
-                        continue
-                    fp = region.get("file_path", "")
-                    sl = region.get("start_line", 0)
-                    el = region.get("end_line", 0)
-                    current_hash = compute_content_hash(fp, sl, el, repo_path, ref=commit_hash)
-                    if not current_hash:
-                        continue
-                    code_body = _extract_code_body(fp, sl, el, repo_path, ref=commit_hash)
-                    pending_checks.append({
-                        "phase": "drift",
-                        "decision_id": d_id,
-                        "region_id": region_id,
-                        "decision_description": desc,
-                        "file_path": fp,
-                        "symbol": region.get("symbol_name", ""),
-                        "content_hash": current_hash,
-                        "code_body": code_body,
-                    })
+            for row in stale_pending:
+                region_id = str(row.get("region_id", ""))
+                if not region_id or region_id in already_covered:
+                    continue
+                fp = row.get("file_path", "")
+                sl = row.get("start_line", 0)
+                el = row.get("end_line", 0)
+                current_hash = compute_content_hash(fp, sl, el, repo_path, ref=commit_hash)
+                if not current_hash:
+                    continue
+                code_body = _extract_code_body(fp, sl, el, repo_path, ref=commit_hash)
+                pending_checks.append({
+                    "phase": "drift",
+                    "decision_id": str(row.get("decision_id", "")),
+                    "region_id": region_id,
+                    "decision_description": str(row.get("description", "")),
+                    "file_path": fp,
+                    "symbol": row.get("symbol_name", ""),
+                    "content_hash": current_hash,
+                    "code_body": code_body,
+                })
         except Exception as exc:
             logger.warning("[link_commit] could not surface stale pending decisions: %s", exc)
 
@@ -811,17 +873,37 @@ class SurrealDBLedgerAdapter:
                 end_line = region_data.get("end_line", 0)
                 content_hash = ""
                 if repo:
-                    _computed = compute_content_hash(
-                        file_path, start_line, end_line, repo, ref=effective_ref
+                    # The hallucinated-file guard only fires when we can actually
+                    # validate file existence — i.e. ``repo`` is a directory on
+                    # disk AND ``effective_ref`` resolves to a real commit.
+                    # ``compute_content_hash`` returns None whenever ``git show``
+                    # fails, which happens in three distinct cases:
+                    #   1. repo path doesn't exist (synthetic / test fixture)
+                    #   2. repo exists but ref doesn't resolve (synthetic ref)
+                    #   3. repo + ref both real, file genuinely missing at ref
+                    # Only case 3 is a hallucinated-file signal and warrants
+                    # rejecting the region. Cases 1 and 2 are unverifiable
+                    # contexts — fall through with empty hash so the decision
+                    # is created as ungrounded (matches pre-v0.10.7 behavior).
+                    repo_on_disk = Path(repo).resolve().is_dir()
+                    ref_resolves = (
+                        repo_on_disk
+                        and (effective_ref == "working_tree"
+                             or resolve_ref(effective_ref, repo) is not None)
                     )
-                    if _computed is None:
-                        logger.warning(
-                            "[ingest] skipping region: file '%s' not found at %s"
-                            " — only bind to existing code, never hypothetical files",
-                            file_path, effective_ref,
+                    if repo_on_disk and ref_resolves:
+                        _computed = compute_content_hash(
+                            file_path, start_line, end_line, repo, ref=effective_ref
                         )
-                        continue
-                    content_hash = _computed
+                        if _computed is None:
+                            logger.warning(
+                                "[ingest] skipping region: file '%s' not found at %s in %s"
+                                " — only bind to existing code, never hypothetical files",
+                                file_path, effective_ref, repo,
+                            )
+                            continue
+                        content_hash = _computed
+                    # else: unverifiable context — fall through with empty hash.
 
                 # Create / update symbol node (retrieval tier)
                 symbol_id = await upsert_symbol(

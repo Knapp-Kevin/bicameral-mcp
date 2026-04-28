@@ -1,0 +1,94 @@
+name: Preflight Failure-Mode Eval
+
+# Advisory dashboard for the failure-scenarios catalog. Runs on PRs that
+# touch preflight retrieval, the eval files, or the catalog itself.
+# **Non-blocking**: continue-on-error means a red eval does not gate
+# merge. Promote to blocking once the catalog has stabilised and the
+# xfailed rows have been fixed in code.
+#
+# Note: when this workflow file lands, it will not run on the PR that
+# adds it — pull_request workflows execute the version on the base
+# branch (main). First execution is on the next qualifying PR after merge.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'handlers/preflight.py'
+      - 'handlers/sync_middleware.py'
+      - 'ledger/adapter.py'
+      - 'ledger/queries.py'
+      - 'code_locator/**'
+      - 'skills/bicameral-preflight/SKILL.md'
+      - 'skills/bicameral-history/SKILL.md'
+      - 'tests/eval/**'
+      - 'docs/preflight-failure-scenarios.md'
+      - '.github/workflows/preflight-eval.yml'
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  preflight-eval:
+    name: Preflight Failure-Mode Eval (advisory)
+    runs-on: ubuntu-latest
+    # Non-blocking — failures surface in PR checks but do not gate merge.
+    # Today's expected state: 6 passed, 4 xfailed (M6, M7a/b/c — open in
+    # catalog with mitigations queued). Strict-xfail flips a row to fail
+    # when its underlying fix lands, forcing a catalog status update.
+    continue-on-error: true
+    # ci-test environment provides ANTHROPIC_API_KEY for the optional
+    # phase 2 (LLM-in-the-loop) step. Phase 1 doesn't need the key.
+    environment: ci-test
+    env:
+      SURREAL_URL: 'memory://'
+      REPO_PATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      # Phase 1: deterministic handler-layer scenarios + schema/catalog
+      # consistency guards. No API key needed; runs on every qualifying PR.
+      - name: Phase 1 — handler-layer eval
+        id: phase1
+        run: |
+          mkdir -p test-results
+          pytest tests/eval/run_preflight_eval.py \
+            -v --tb=short \
+            --junitxml=test-results/preflight-eval.xml
+
+      # Phase 2: LLM-in-the-loop skill-judgment eval. Replays from cached
+      # fixtures when SKILL.md and the dataset are unchanged (zero cost,
+      # no API call). Cache miss → calls the Anthropic API if the key is
+      # present; otherwise the affected row skips. The whole step
+      # continues on error so it never blocks merge.
+      - name: Phase 2 — skill-layer eval (LLM-in-the-loop)
+        id: phase2
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          pytest tests/eval/run_preflight_skill_eval.py \
+            -v --tb=short \
+            --junitxml=test-results/preflight-skill-eval.xml
+
+      - name: Surface results in step summary
+        if: always()
+        uses: test-summary/action@v2
+        with:
+          paths: "test-results/*.xml"
+          show: fail, skip
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-eval-results
+          path: test-results/
+          retention-days: 30

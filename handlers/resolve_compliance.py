@@ -36,6 +36,7 @@ from ledger.queries import (
     decision_exists,
     delete_binds_to_edge,
     project_decision_status,
+    promote_ephemeral_verdict,
     region_exists,
     update_decision_status,
     update_region_hash,
@@ -134,6 +135,18 @@ async def handle_resolve_compliance(
             continue
 
         is_pruned = v.verdict == "not_relevant"
+
+        # V2: promote ephemeral=True → False when this hash is confirmed non-ephemeral.
+        # The UNIQUE index on (d,r,h) means upsert_compliance_check is a no-op if the
+        # row already exists with ephemeral=True, so we must UPDATE it first.
+        if not is_ephemeral and v.content_hash:
+            try:
+                await promote_ephemeral_verdict(client, v.decision_id, v.region_id, v.content_hash)
+            except Exception as exc:
+                logger.warning(
+                    "[resolve_compliance] promote_ephemeral_verdict failed for %s: %s",
+                    v.decision_id, exc,
+                )
 
         await upsert_compliance_check(
             client,

@@ -770,6 +770,29 @@ async def upsert_compliance_check(
         return False
 
 
+async def promote_ephemeral_verdict(
+    client: LedgerClient,
+    decision_id: str,
+    region_id: str,
+    content_hash: str,
+) -> bool:
+    """Flip ephemeral=False for any compliance_check row for (d,r,h) with ephemeral=True.
+
+    Called when the same content hash that was first written on a feature branch
+    (ephemeral=True) is confirmed to exist on the authoritative branch or in a
+    non-ephemeral resolve_compliance call.
+    """
+    try:
+        await client.execute(
+            "UPDATE compliance_check SET ephemeral = false "
+            "WHERE decision_id = $d AND region_id = $r AND content_hash = $h AND ephemeral = true",
+            {"d": decision_id, "r": region_id, "h": content_hash},
+        )
+        return True
+    except Exception:
+        return False
+
+
 async def decision_exists(client: LedgerClient, decision_id: str) -> bool:
     """Return True iff a decision row exists with the given record id."""
     rows = await client.query(f"SELECT id FROM {decision_id} LIMIT 1")
@@ -958,22 +981,32 @@ async def get_regions_without_hash(
 
 
 async def get_pending_decisions_with_regions(client: LedgerClient) -> list[dict]:
-    """Return all decision+region pairs where decision status is 'pending'.
+    """Return flat (decision, region) rows where decision status is 'pending'.
 
     Used by ingest_commit to surface stale pending checks that were left
     unresolved from an aborted sync run.
+
+    Implementation note: the SurrealDB v2 embedded engine does not allow
+    ``AS`` aliases inside graph traversal field selectors (i.e.
+    ``->code_region.{type::string(id) AS region_id, ...}`` is rejected as a
+    parse error). We query the ``binds_to`` edge table directly and dot-
+    access the ``in`` (decision) and ``out`` (region) endpoints; that path
+    supports ``AS`` aliases, so we get a flat shape — one row per
+    (decision, region) pair — that callers iterate without nested unpack.
     """
     rows = await client.query(
         """
         SELECT
-            type::string(id) AS decision_id,
-            description,
-            ->binds_to->code_region.{
-                type::string(id) AS region_id,
-                file_path, symbol_name, start_line, end_line, content_hash
-            } AS regions
-        FROM decision
-        WHERE status = 'pending'
+            type::string(in)    AS decision_id,
+            in.description      AS description,
+            type::string(out)   AS region_id,
+            out.file_path       AS file_path,
+            out.symbol_name     AS symbol_name,
+            out.start_line      AS start_line,
+            out.end_line        AS end_line,
+            out.content_hash    AS content_hash
+        FROM binds_to
+        WHERE in.status = 'pending'
         """,
     )
     return rows or []
