@@ -462,6 +462,35 @@ SHA256(audit_content_hash + previous_chain_hash) = **`332c72b23d0d64ec77979f6414
 **Next required action:** `/qor-implement` (Phase-by-phase TDD per the v2 plan).
 
 ---
-*Chain integrity: VALID (12 entries)*
-*Genesis: `29dfd085` → Phase 1+2 Seal: `509b411d` → Phase 3 Seal: `89cac7ff` → Phase 4 Audit v1 (VETO): `231fe5f1` → Phase 4 Audit v2 (PASS): `332c72b2`*
-*Next required action: `/qor-implement`*
+
+## Entry #13 — GATE TRIBUNAL (PASS) — Phase 4 plan v3 (post-rebase, Phase 1 sealed)
+
+**Date:** 2026-04-28
+**Phase:** AUDIT (re-run)
+**Persona:** Judge
+**Subject:** `plan-codegenome-phase-4.md` v3
+**Risk Grade:** L2
+**Verdict:** **PASS**
+
+**Refresh summary:** branch rebased onto `BicameralAI/dev` (single base; 3-deep stack collapsed). Phase 1 of Phase 4 SEALED at commit `2afd52d` post-rebase / `c39317c` plan refresh: schema v13 + contracts + 9 persistence tests all green; 146/146 broader regression clean. Obs-V2-1 resolved positively (`SHOW CHANGES FOR TABLE` works in v2 embedded). Merge target now `BicameralAI/dev`. Implementation queue table for Phases 2-5 added.
+
+**Grounding sweep (per SG-PLAN-GROUNDING-DRIFT):** every claim verified — branch state, schema versions (dev=v12, Phase 4 branch=v13), Phase 3 primitives all confirmed in dev. PR #71/#73 merge timestamps verified.
+
+**Internal consistency (per SG-PLAN-INTERNAL-INCONSISTENCY):** all v2 sealed decisions preserved in v3 — sibling pass, multi-language scope, `PreClassificationHint`, CHANGEFEED 30d, `c_sharp` consistency, 30-fixture corpus, `call_site_extractor.py`, `_diff_dispatch.py`. No regressions.
+
+**Non-blocking observations (2):** Obs-V3-1 schema-version race with PR #81 (sequencing only, 5-min mechanical fix when triggered); Obs-V3-2 carries Obs-V2-2 forward (legacy tree-sitter guard for F3 parity test).
+
+**Plan content hash (v3):** `sha256:911171cfc18ce1eba783fd49e3e12be6a1d1ac5375cb06c728dea88a6ff14b52`
+**Audit content hash:** `sha256:883b4cf776c97aaa66a1a67b45b66736b7472bc59c89309ed77d9724ccddc337`
+**Previous chain hash:** `332c72b23d0d64ec77979f64147e5d4df4a9fa130f9c110be6217e5331b66f14` (Entry #12)
+
+**Merkle seal:** SHA256(audit_content_hash + previous_chain_hash) = **`21ac210f1d043ccfd22fd941e5b373783c833240b1ca473f55a3cf5c8e6b2026`**
+
+**Decision:** v3 plan passes adversarial review. Implementation gate **OPENS** for Phases 2-5. Per user directive ("if /qor-audit passes, then you can go directly to /qor-implement"), chain proceeds without pause.
+
+**Next required action:** `/qor-implement` (Phase 2 — drift classifier + multi-language line categorizers + call_site_extractor).
+
+---
+*Chain integrity: VALID (13 entries)*
+*Genesis: `29dfd085` → Phase 1+2 Seal: `509b411d` → Phase 3 Seal: `89cac7ff` → Phase 4 Audit v1 (VETO): `231fe5f1` → Phase 4 Audit v2 (PASS): `332c72b2` → Phase 4 Audit v3 (PASS, post-rebase): `21ac210f`*
+*Next required action: `/qor-implement` Phase 2*
