@@ -32,23 +32,20 @@ Phase 4 (#61) — issue #61 weighted-score table:
 
 from __future__ import annotations
 
-from typing import Set
-
-from .symbol_extractor import _get_parser, _node_text, _LANG_PACKAGE_MAP
-
+from .symbol_extractor import _LANG_PACKAGE_MAP, _get_parser, _node_text
 
 # Per-language tree-sitter node types that represent a call/invocation.
 # Each value is a tuple ``(call_node_type, callee_field_name)`` where
 # ``callee_field_name`` is the field on the call node whose subtree
 # names the callable.
 _CALL_NODES: dict[str, tuple[str, str]] = {
-    "python":     ("call",                  "function"),
-    "javascript": ("call_expression",       "function"),
-    "typescript": ("call_expression",       "function"),
-    "go":         ("call_expression",       "function"),
-    "rust":       ("call_expression",       "function"),
-    "java":       ("method_invocation",     "name"),
-    "c_sharp":    ("invocation_expression", "function"),
+    "python": ("call", "function"),
+    "javascript": ("call_expression", "function"),
+    "typescript": ("call_expression", "function"),
+    "go": ("call_expression", "function"),
+    "rust": ("call_expression", "function"),
+    "java": ("method_invocation", "name"),
+    "c_sharp": ("invocation_expression", "function"),
 }
 
 
@@ -71,7 +68,11 @@ def _last_identifier(text: str) -> str:
 
 
 def _walk_calls(
-    node, code: bytes, call_type: str, callee_field: str, out: Set[str],
+    node,
+    code: bytes,
+    call_type: str,
+    callee_field: str,
+    out: set[str],
 ) -> None:
     """Depth-first traversal collecting callee names."""
     if node.type == call_type:
@@ -84,7 +85,7 @@ def _walk_calls(
         _walk_calls(child, code, call_type, callee_field, out)
 
 
-def extract_call_sites(content: str, language: str) -> Set[str]:
+def extract_call_sites(content: str, language: str) -> set[str]:
     """Return the set of callable names invoked inside ``content``.
 
     ``language`` must be one of the keys of ``_LANG_PACKAGE_MAP``
@@ -116,6 +117,6 @@ def extract_call_sites(content: str, language: str) -> Set[str]:
     except Exception:
         return set()
     call_type, callee_field = _CALL_NODES[language]
-    calls: Set[str] = set()
+    calls: set[str] = set()
     _walk_calls(tree.root_node, code, call_type, callee_field, calls)
     return calls

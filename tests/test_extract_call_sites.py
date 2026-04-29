@@ -16,7 +16,6 @@ import pytest
 
 from code_locator.indexing.call_site_extractor import extract_call_sites
 
-
 # ── Per-language happy-path tests ────────────────────────────────────
 
 
@@ -95,7 +94,7 @@ fn main() {
     calls = extract_call_sites(code, "rust")
     # `println!` is a macro_invocation, not a call_expression — skipped.
     assert "helper" in calls
-    assert "max" in calls          # std::cmp::max → "max" (last identifier)
+    assert "max" in calls  # std::cmp::max → "max" (last identifier)
     assert "method" in calls
 
 

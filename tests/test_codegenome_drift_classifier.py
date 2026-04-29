@@ -20,25 +20,26 @@ import inspect
 
 import pytest
 
+from codegenome.diff_categorizer import categorize_diff
 from codegenome.drift_classifier import (
-    DriftClassification,
-    _signal_signature,
-    _signal_neighbors,
-    _signal_diff_lines,
-    _signal_no_new_calls,
-    _verdict_from_score,
-    _build_evidence_refs,
     _SUPPORTED_LANGUAGES,
+    DriftClassification,
+    _build_evidence_refs,
+    _signal_diff_lines,
+    _signal_neighbors,
+    _signal_no_new_calls,
+    _signal_signature,
+    _verdict_from_score,
     classify_drift,
 )
-from codegenome.diff_categorizer import categorize_diff
-
 
 # ── Helper: build a classify_drift call with sensible defaults ───────
 
 
 def _classify(
-    old: str, new: str, *,
+    old: str,
+    new: str,
+    *,
     language: str = "python",
     old_sig: str | None = "SIG_X",
     new_sig: str | None = "SIG_X",
@@ -46,9 +47,12 @@ def _classify(
     new_neighbors=("a", "b", "c"),
 ) -> DriftClassification:
     return classify_drift(
-        old, new,
-        old_signature_hash=old_sig, new_signature_hash=new_sig,
-        old_neighbors=old_neighbors, new_neighbors=new_neighbors,
+        old,
+        new,
+        old_signature_hash=old_sig,
+        new_signature_hash=new_sig,
+        old_neighbors=old_neighbors,
+        new_neighbors=new_neighbors,
         language=language,
     )
 
@@ -78,7 +82,8 @@ def test_classify_import_reordering_is_cosmetic() -> None:
     # Same signature, same neighbors, no new calls; only import lines move.
     result = _classify(old, new)
     assert result.verdict in ("cosmetic", "uncertain"), (
-        result.confidence, result.signals,
+        result.confidence,
+        result.signals,
     )
 
 
@@ -113,8 +118,10 @@ def test_classify_signature_change_is_semantic() -> None:
     old = "def f(x): return x\n"
     new = "def f(x, y=1): return x + y\n"
     result = _classify(
-        old, new,
-        old_sig="SIG_A", new_sig="SIG_B",  # signatures differ
+        old,
+        new,
+        old_sig="SIG_A",
+        new_sig="SIG_B",  # signatures differ
     )
     assert result.verdict != "cosmetic", (result.confidence, result.signals)
 
@@ -143,12 +150,16 @@ def test_classify_uncertain_when_signals_mixed() -> None:
     old = "def f(x):\n    return x + 1\n"
     new = "def g(x):\n    return x - 1\n"  # rename + flipped operator
     result = _classify(
-        old, new,
-        old_sig="SIG_A", new_sig="SIG_B",
-        old_neighbors=("a", "b"), new_neighbors=("a", "c"),
+        old,
+        new,
+        old_sig="SIG_A",
+        new_sig="SIG_B",
+        old_neighbors=("a", "b"),
+        new_neighbors=("a", "c"),
     )
     assert result.verdict in ("uncertain", "semantic"), (
-        result.confidence, result.signals,
+        result.confidence,
+        result.signals,
     )
 
 
@@ -169,7 +180,8 @@ def test_classify_javascript_jsdoc_addition_is_cosmetic() -> None:
     new = "/** Add one. */\nfunction f(x) {\n    return x + 1;\n}\n"
     result = _classify(old, new, language="javascript")
     assert result.verdict in ("cosmetic", "uncertain"), (
-        result.confidence, result.signals,
+        result.confidence,
+        result.signals,
     )
 
 
@@ -223,10 +235,10 @@ def test_supported_languages_match_code_locator() -> None:
     ``_LANG_PACKAGE_MAP`` isn't defined.
     """
     import code_locator.indexing.symbol_extractor as se
+
     if se._USE_LEGACY:
         pytest.skip(
-            "Legacy tree-sitter mode — _LANG_PACKAGE_MAP not defined "
-            "(see Obs-V3-2 / Obs-V2-2)."
+            "Legacy tree-sitter mode — _LANG_PACKAGE_MAP not defined (see Obs-V3-2 / Obs-V2-2)."
         )
     assert _SUPPORTED_LANGUAGES == set(se._LANG_PACKAGE_MAP.keys())
 
