@@ -52,6 +52,10 @@ from dashboard.server import get_dashboard_server
 
 SERVER_NAME = "bicameral-mcp"
 
+# In-process map of session_id → {t0, rationale} for skill timing.
+# Populated by bicameral.skill_begin, consumed by bicameral.skill_end.
+_skill_sessions: dict[str, dict] = {}
+
 
 def _resolve_server_version() -> str:
     """Return the version of the code actually running.
@@ -94,6 +98,9 @@ EXPECTED_TOOL_NAMES = [
     "bicameral.resolve_collision",
     "bicameral.history",
     "bicameral.dashboard",
+    "bicameral.skill_begin",
+    "bicameral.skill_end",
+    "bicameral.feedback",
     "validate_symbols",
     "get_neighbors",
     "extract_symbols",
@@ -222,12 +229,15 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="bicameral.reset",
             description=(
-                "Fail-safe valve for a polluted ledger. Wipes every row scoped to the current repo "
-                "and returns a replay plan listing the source_cursors that existed before the wipe, "
-                "so the caller can re-run the original bicameral_ingest calls. "
+                "Fail-safe valve for a polluted or stale ledger. Returns a replay plan and, "
+                "if confirmed, wipes state according to wipe_mode. "
+                "wipe_mode='ledger' (default): wipes only the materialized SurrealDB rows — "
+                "config and event files are preserved. Safe for bug recovery; server stays live. "
+                "wipe_mode='full': deletes the entire .bicameral/ directory (ledger + config.yaml "
+                "+ team event files). Nuclear restart. Always show the dry-run warning to the user "
+                "before confirming full mode. "
                 "DRY RUN BY DEFAULT — confirm=false returns the wipe plan without touching anything. "
-                "Pass confirm=true to actually wipe. Scoped by repo, so multi-repo ledger "
-                "instances stay isolated. "
+                "Pass confirm=true to actually wipe. "
                 "Slash alias: /bicameral:reset"
             ),
             inputSchema={
@@ -242,6 +252,18 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "default": True,
                         "description": "When true, include the replay plan alongside the wipe summary",
+                    },
+                    "wipe_mode": {
+                        "type": "string",
+                        "enum": ["ledger", "full"],
+                        "default": "ledger",
+                        "description": (
+                            "'ledger' (default): wipe materialized DB rows only — config and event "
+                            "files are preserved, server stays live. Use for bug/pollution recovery. "
+                            "'full': delete the entire .bicameral/ directory. Nuclear option — "
+                            "removes config, team event history, and all data. Always confirm "
+                            "with the user after showing the dry-run warning."
+                        ),
                     },
                 },
             },
@@ -556,6 +578,129 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        # ── Skill telemetry bookends ──────────────────────────────────
+        Tool(
+            name="bicameral.skill_begin",
+            description=(
+                "Mark the start of a skill invocation for telemetry. Call this as the very "
+                "first step of any bicameral skill. Returns the session_id to pass to "
+                "bicameral.skill_end when the skill completes. No ledger writes — purely "
+                "a timing bookmark. Skill authors: pass a freshly generated UUID as session_id."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The skill being invoked (e.g. 'bicameral-ingest')",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Caller-generated UUID that correlates this begin with the matching skill_end",
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One-liner for why this skill was triggered (e.g. 'user pasted transcript and said track this'). Used for quality feedback analysis.",
+                    },
+                },
+                "required": ["skill_name", "session_id"],
+            },
+        ),
+        Tool(
+            name="bicameral.skill_end",
+            description=(
+                "Mark the end of a skill invocation and emit the skill-level telemetry event. "
+                "Call this as the very last step of any bicameral skill, passing the same "
+                "session_id returned by bicameral.skill_begin. Returns duration_ms for the "
+                "full skill wall-clock time. No ledger writes."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The skill being completed (must match skill_begin)",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "The session_id from the matching bicameral.skill_begin call",
+                    },
+                    "errored": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "True if the skill exited due to an error or user-abort",
+                    },
+                    "error_class": {
+                        "type": "string",
+                        "enum": [
+                            "symbol_not_found",
+                            "collision_unresolved",
+                            "drift_mislabeled",
+                            "low_confidence_verdict",
+                            "ledger_empty",
+                            "grounding_failed",
+                            "user_abort",
+                            "other",
+                        ],
+                        "description": "Structured failure category when errored=true. Maps to desync catalog entries for prioritization.",
+                    },
+                    "diagnostic": {
+                        "type": "object",
+                        "description": (
+                            "Skill-level metrics. Field names are strictly validated server-side — "
+                            "unknown fields are dropped and echoed back in diagnostic_warning. "
+                            "bicameral-ingest fields: decisions_ingested, g2_candidates_evaluated, "
+                            "g2_dropped_hard_exclude, g2_dropped_l3, g2_dropped_gate1, g2_dropped_gate2, "
+                            "g2_dropped_implied, g2_parked_context_pending, g2_proposed_count, "
+                            "g2_l1_count, g2_l2_count, g2_user_overrode, g3_decisions_grounded, "
+                            "g3_decisions_ungrounded, g6_compliance_checks_received, g6_verdicts_compliant, "
+                            "g6_verdicts_drifted, g6_verdicts_not_relevant, g6_verdicts_cosmetic_autopass. "
+                            "bicameral-preflight fields: g9_history_features_count, g9_features_in_scope, "
+                            "g9_decisions_in_scope, g9_preflight_fired, g10_findings_drift_total, "
+                            "g10_findings_drift_cosmetic_autopass, g10_findings_drift_ask, "
+                            "g10_questions_surfaced, g10_user_overrode, g11_corrections_turns_scanned, "
+                            "g11_corrections_prefilter_retained, g11_corrections_classified_ask, "
+                            "g11_corrections_classified_mechanical, g11_corrections_classified_not, "
+                            "g11_corrections_dedup_removed, g11_user_overrode."
+                        ),
+                    },
+                },
+                "required": ["skill_name", "session_id"],
+            },
+        ),
+        Tool(
+            name="bicameral.feedback",
+            description=(
+                "Call this when the skill gets stuck or encounters an unexpected failure. "
+                "Records structured feedback that maps directly onto the desync scenario catalog: "
+                "what you were trying to do, what you attempted, and where you got blocked. "
+                "This feeds into the quality feedback loop — use it to report any failure that "
+                "doesn't fit neatly into an error_class. Do NOT call with vague feedback like "
+                "'it felt slow' or 'it didn't work' — the value is in the specific blocked step."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "description": "The skill that encountered the issue (e.g. 'bicameral-preflight')",
+                    },
+                    "trying_to": {
+                        "type": "string",
+                        "description": "What the skill was trying to accomplish at the point of failure",
+                    },
+                    "attempted": {
+                        "type": "string",
+                        "description": "What steps were taken before hitting the block",
+                    },
+                    "stuck_on": {
+                        "type": "string",
+                        "description": "The specific obstacle — maps to a desync scenario catalog row",
+                    },
+                },
+                "required": ["skill", "trying_to", "attempted", "stuck_on"],
+            },
+        ),
         # ── Code locator tools (MCP-native) ──────────────────────────
         Tool(
             name="validate_symbols",
@@ -619,12 +764,87 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     import json
     import time
 
-    from telemetry import record_event
-
     ctx = BicameralContext.from_env()
-    _t0 = time.monotonic()
-    _errored = False
-    _diagnostic: dict | None = None
+
+    # ── Skill telemetry bookends (no ledger, no sync) ─────────────────
+    if name == "bicameral.skill_begin":
+        session_id = arguments["session_id"]
+        _skill_sessions[session_id] = {
+            "t0": time.monotonic(),
+            "rationale": arguments.get("rationale", ""),
+        }
+        return [TextContent(type="text", text=json.dumps({
+            "session_id": session_id,
+            "skill": arguments["skill_name"],
+            "status": "started",
+        }))]
+
+    if name == "bicameral.skill_end":
+        from pydantic import ValidationError
+        from telemetry import record_skill_event
+        from contracts import SKILL_DIAGNOSTIC_MODELS
+        session_id = arguments["session_id"]
+        skill_name = arguments["skill_name"]
+        errored = arguments.get("errored", False)
+        error_class = arguments.get("error_class")
+        raw_diagnostic = arguments.get("diagnostic") or {}
+        session_data = _skill_sessions.pop(session_id, None)
+        t0 = session_data["t0"] if session_data else None
+        rationale = session_data.get("rationale") if session_data else None
+        duration_ms = int((time.monotonic() - t0) * 1000) if t0 is not None else 0
+
+        # Validate diagnostic against the per-skill Pydantic model.
+        # On unknown fields: record the clean validated dict to PostHog and
+        # echo unknown field names back so the LLM can correct them.
+        diagnostic_model = SKILL_DIAGNOSTIC_MODELS.get(skill_name)
+        unknown_fields: list[str] = []
+        if diagnostic_model and raw_diagnostic:
+            try:
+                validated = diagnostic_model.model_validate(raw_diagnostic)
+                diagnostic = validated.model_dump()
+            except ValidationError as exc:
+                unknown_fields = [
+                    e["loc"][0] for e in exc.errors()
+                    if e["type"] == "extra_forbidden" and e["loc"]
+                ]
+                # Strip unknowns and validate the remaining known fields.
+                known_raw = {k: v for k, v in raw_diagnostic.items() if k not in unknown_fields}
+                try:
+                    validated = diagnostic_model.model_validate(known_raw)
+                    diagnostic = validated.model_dump()
+                except ValidationError:
+                    diagnostic = known_raw
+        else:
+            diagnostic = raw_diagnostic or None
+
+        record_skill_event(
+            skill_name, session_id, duration_ms, errored, SERVER_VERSION,
+            diagnostic=diagnostic, error_class=error_class, rationale=rationale,
+        )
+        response: dict = {
+            "session_id": session_id,
+            "skill": skill_name,
+            "duration_ms": duration_ms,
+            "status": "recorded",
+        }
+        if unknown_fields:
+            response["diagnostic_warning"] = (
+                f"Unknown diagnostic field(s) were dropped and not recorded: "
+                f"{unknown_fields}. Use the exact field names from the skill spec."
+            )
+        return [TextContent(type="text", text=json.dumps(response))]
+
+    if name == "bicameral.feedback":
+        from telemetry import send_event
+        send_event(
+            SERVER_VERSION,
+            event_type="agent_feedback",
+            skill=arguments.get("skill", ""),
+            trying_to=arguments.get("trying_to", ""),
+            attempted=arguments.get("attempted", ""),
+            stuck_on=arguments.get("stuck_on", ""),
+        )
+        return [TextContent(type="text", text=json.dumps({"recorded": True}))]
 
     # Auto-sync HEAD on every tool call except link_commit (which syncs itself).
     # Returns the LinkCommitResponse when a new commit was just processed so we
@@ -636,6 +856,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     try:
         if name in ("bicameral.link_commit", "link_commit"):
+
             result = await handle_link_commit(
                 ctx,
                 commit_hash=arguments.get("commit_hash", "HEAD"),
@@ -659,6 +880,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ctx,
                 confirm=arguments.get("confirm", False),
                 replay=arguments.get("replay", True),
+                wipe_mode=arguments.get("wipe_mode", "ledger"),
             )
         elif name in ("bicameral.preflight", "preflight"):
             result = await handle_preflight(
@@ -688,7 +910,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 commit_hash=arguments.get("commit_hash"),
                 flow_id=arguments.get("flow_id"),
             )
-            _diagnostic = {"verdict_count": len(arguments.get("verdicts", []))}
         elif name in ("bicameral.ratify", "ratify"):
             result = await handle_ratify(
                 ctx,
@@ -779,11 +1000,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if created > 0:
                 grounded = stats.get("grounded", 0)
                 ungrounded = stats.get("ungrounded", 0)
-                _diagnostic = {
-                    "grounded_count": grounded,
-                    "ungrounded_count": ungrounded,
-                    "decisions_created": created,
-                }
                 payload["_guidance"] = (
                     f"Ingest complete: {created} decision(s) extracted "
                     f"({grounded} grounded to code, {ungrounded} ungrounded). "
@@ -812,7 +1028,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
     except (DestructiveMigrationRequired, SchemaVersionTooNew) as exc:
-        _errored = True
         action = (
             "run bicameral_reset(confirm=True) to apply the breaking migration and clear legacy data"
             if isinstance(exc, DestructiveMigrationRequired)
@@ -822,12 +1037,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             type="text",
             text=json.dumps({"error": str(exc), "action": action}, indent=2),
         )]
-    except Exception:
-        _errored = True
-        raise
-    finally:
-        _duration_ms = int((time.monotonic() - _t0) * 1000)
-        record_event(name, _duration_ms, _errored, SERVER_VERSION, _diagnostic)
 
 
 async def run_smoke_test() -> dict[str, object]:
@@ -889,6 +1098,18 @@ def cli_main(argv: list[str] | None = None) -> int:
     parser = ArgumentParser(description="Bicameral MCP server")
     subparsers = parser.add_subparsers(dest="command")
 
+    # config subcommand
+    subparsers.add_parser(
+        "config",
+        help="interactive config editor — update mode, guided, and telemetry settings",
+    )
+
+    # reset subcommand
+    subparsers.add_parser(
+        "reset",
+        help="interactive ledger reset — wipes state with confirmation",
+    )
+
     # setup subcommand
     setup_parser = subparsers.add_parser(
         "setup",
@@ -918,6 +1139,14 @@ def cli_main(argv: list[str] | None = None) -> int:
         version=f"%(prog)s {SERVER_VERSION}",
     )
     args = parser.parse_args(argv)
+
+    if args.command == "config":
+        from setup_wizard import run_config_wizard
+        return run_config_wizard()
+
+    if args.command == "reset":
+        from setup_wizard import run_reset_wizard
+        return run_reset_wizard()
 
     if args.command == "setup":
         from setup_wizard import run_setup

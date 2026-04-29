@@ -219,12 +219,18 @@ def invalidate_sync_cache(ctx) -> None:
     invalidate a prior sync's view of repo state (ingest_payload, update,
     reset, or any flow that mutates the ledger). Callers must hold the
     invariant: writes clear cache → next read runs a fresh sync.
+
+    Also resets the process-level SHA cache in sync_middleware so that
+    the next ``ensure_ledger_synced`` call runs a fresh sync even when
+    HEAD hasn't moved (e.g. decisions ingested on the same commit).
     """
     sync_state = getattr(ctx, "_sync_state", None)
     if isinstance(sync_state, dict):
         sync_state.pop("last_sync_sha", None)
         sync_state.pop("last_sync_response", None)
         sync_state.pop("pending_flow_id", None)
+    from handlers.sync_middleware import invalidate_process_cache
+    invalidate_process_cache()
 
 
 async def _run_drift_classification_pass(

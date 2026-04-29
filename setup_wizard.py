@@ -530,9 +530,9 @@ def _select_telemetry() -> bool:
     print()
     print("  Anonymous telemetry — exact payload that would be sent:")
     print()
-    print('    {"tool": "bicameral.ingest", "version": "0.5.3",')
-    print('     "duration_ms": 412, "errored": false,')
-    print('     "diagnostic": {"grounded_count": 3, "ungrounded_count": 1}}')
+    print('    {"skill": "bicameral-ingest", "session_id": "<uuid>", "version": "0.5.3",')
+    print('     "duration_ms": 4120, "errored": false,')
+    print('     "diagnostic": {"decisions_ingested": 3}}')
     print()
     print("    No code. No decision text. No file paths. No personal data.")
     print("    Change anytime: BICAMERAL_TELEMETRY=0")
@@ -730,4 +730,235 @@ def run_setup(repo_hint: str | None = None, history_hint: str | None = None) -> 
     print('    "Check this file for drifted decisions"')
     print()
 
+    return 0
+
+
+def run_config_wizard() -> int:
+    """Interactive CLI wizard for editing bicameral config.yaml.
+
+    Reads the current config, prompts for each setting via questionary,
+    writes updated config.yaml, and reinstalls skills/hooks so changes
+    take effect immediately.
+    """
+    import subprocess
+    import sys
+    try:
+        import yaml
+    except ImportError:
+        import json as yaml  # fallback: won't write yaml but will read
+
+    print()
+    print("  ┌─────────────────────────────────────────┐")
+    print("  │  Bicameral MCP — Config                  │")
+    print("  └─────────────────────────────────────────┘")
+    print()
+
+    repo_path = _detect_repo()
+    config_path = repo_path / ".bicameral" / "config.yaml"
+
+    # Read current values
+    if config_path.exists():
+        try:
+            cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            cfg = {}
+    else:
+        cfg = {}
+
+    cur_mode = cfg.get("mode", "team")
+    cur_guided = cfg.get("guided", True)
+    cur_telemetry = cfg.get("telemetry", True)
+
+    print(f"  Current config ({config_path}):")
+    print(f"    mode:      {cur_mode}")
+    print(f"    guided:    {cur_guided}")
+    print(f"    telemetry: {cur_telemetry}")
+    print()
+
+    new_mode = _select_collaboration_mode_with_default(cur_mode)
+    new_guided = _select_guided_mode_with_default(cur_guided)
+    new_telemetry = _select_telemetry_with_default(cur_telemetry)
+
+    # Write updated config
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "# Bicameral configuration\n"
+        f"mode: {new_mode}\n"
+        f"guided: {'true' if new_guided else 'false'}\n"
+        f"telemetry: {'true' if new_telemetry else 'false'}\n",
+        encoding="utf-8",
+    )
+
+    # Reinstall skills and hooks via subprocess (avoids stale sys.modules)
+    script = (
+        "from setup_wizard import _install_skills, _install_claude_hooks"
+        + (", _install_git_post_commit_hook" if new_guided else "")
+        + "; from pathlib import Path; "
+        f"rp = Path(r'{repo_path}'); "
+        "n = _install_skills(rp); _install_claude_hooks(rp); "
+        + ("_install_git_post_commit_hook(rp); " if new_guided else "")
+        + "print(n)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    skills_n = int(result.stdout.strip() or "0") if result.returncode == 0 else 0
+
+    print()
+    print("  Config updated:")
+    _print_change("mode", cur_mode, new_mode)
+    _print_change("guided", cur_guided, new_guided)
+    _print_change("telemetry", cur_telemetry, new_telemetry)
+    print(f"  Skills reinstalled: {skills_n}")
+    print(f"  Git post-commit hook: {'installed' if new_guided else 'not installed (Normal mode)'}")
+    print()
+    return 0
+
+
+def _print_change(label: str, old, new) -> None:
+    if old == new:
+        print(f"    {label}: {new}  (unchanged)")
+    else:
+        print(f"    {label}: {old} → {new}")
+
+
+def _select_collaboration_mode_with_default(current: str) -> str:
+    import questionary
+    if not _is_interactive():
+        return current
+    choices = [
+        questionary.Choice("Team  — decisions shared via git (append-only event files)", value="team"),
+        questionary.Choice("Solo  — decisions stored locally", value="solo"),
+    ]
+    result = questionary.select(
+        "Collaboration mode:",
+        choices=choices,
+        default=next((c for c in choices if c.value == current), choices[0]),
+    ).ask()
+    return result if result is not None else current
+
+
+def _select_guided_mode_with_default(current: bool) -> bool:
+    import questionary
+    if not _is_interactive():
+        return current
+    choices = [
+        questionary.Choice("Guided  — blocking hints + git post-commit hook", value=True),
+        questionary.Choice("Normal  — advisory hints only", value=False),
+    ]
+    result = questionary.select(
+        "Interaction intensity:",
+        choices=choices,
+        default=next((c for c in choices if c.value == current), choices[0]),
+    ).ask()
+    return result if result is not None else current
+
+
+def _select_telemetry_with_default(current: bool) -> bool:
+    import questionary
+    if not _is_interactive():
+        return current
+    choices = [
+        questionary.Choice("Yes  — share anonymous usage stats to improve Bicameral", value=True),
+        questionary.Choice("No   — keep telemetry off", value=False),
+    ]
+    result = questionary.select(
+        "Anonymous telemetry:",
+        choices=choices,
+        default=next((c for c in choices if c.value == current), choices[0]),
+    ).ask()
+    return result if result is not None else current
+
+
+def run_reset_wizard() -> int:
+    """Interactive CLI wizard for bicameral.reset.
+
+    Asks the user which wipe mode they want, shows a dry-run summary,
+    then asks for explicit confirmation before wiping.
+    """
+    import asyncio
+    import questionary
+
+    print()
+    print("  ┌─────────────────────────────────────────┐")
+    print("  │  Bicameral MCP — Reset                   │")
+    print("  └─────────────────────────────────────────┘")
+    print()
+
+    # Step 1: choose mode
+    wipe_mode = questionary.select(
+        "What do you want to reset?",
+        choices=[
+            questionary.Choice(
+                "Ledger only  — wipe materialized DB rows, keep config and event files (safe default)",
+                value="ledger",
+            ),
+            questionary.Choice(
+                "Full reset   — delete the entire .bicameral/ directory including config and event history (nuclear)",
+                value="full",
+            ),
+        ],
+    ).ask()
+
+    if wipe_mode is None:
+        print("  Cancelled.")
+        return 0
+
+    # Step 2: dry-run
+    import os
+    from context import BicameralContext
+    from handlers.reset import handle_reset
+
+    repo_path = os.environ.get("REPO_PATH", ".")
+    os.environ["REPO_PATH"] = repo_path
+    ctx = BicameralContext.from_env()
+
+    print()
+    print("  Running dry-run…")
+    dry = asyncio.run(handle_reset(ctx, confirm=False, wipe_mode=wipe_mode))
+
+    print()
+    print(f"  Wipe mode    : {dry.wipe_mode}")
+    print(f"  Cursors      : {dry.cursors_before} source_cursor row(s) would be wiped")
+    if dry.wipe_mode == "full" and dry.bicameral_dir:
+        print(f"  Directory    : {dry.bicameral_dir}")
+        print()
+        print("  ⚠️  WARNING: this will delete the entire .bicameral/ directory,")
+        print("     including config.yaml and all team event history. There is no undo.")
+
+    if dry.replay_plan:
+        print()
+        print("  Replay plan (re-ingest these after reset):")
+        for entry in dry.replay_plan:
+            print(f"    {entry.source_type}  {entry.source_scope}  →  {entry.last_source_ref}")
+    else:
+        print("  Replay plan  : empty — nothing to re-ingest")
+
+    # Step 3: confirm
+    print()
+    confirm_label = "yes, full reset" if wipe_mode == "full" else "yes, reset"
+    confirmed = questionary.confirm(
+        f"Proceed? (type '{confirm_label}' to confirm)",
+        default=False,
+    ).ask()
+
+    if not confirmed:
+        print()
+        print("  Cancelled — nothing was wiped.")
+        return 0
+
+    # Step 4: wipe
+    print()
+    print("  Wiping…")
+    result = asyncio.run(handle_reset(ctx, confirm=True, wipe_mode=wipe_mode))
+
+    if result.wiped:
+        print(f"  Done. {result.cursors_before} cursor(s) wiped.")
+        if result.replay_plan:
+            print("  Re-ingest the sources listed above to restore the ledger.")
+    else:
+        print("  Wipe did not complete — check the error above.")
+
+    print()
     return 0
