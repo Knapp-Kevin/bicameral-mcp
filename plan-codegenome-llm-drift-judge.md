@@ -289,15 +289,14 @@ green.
 
 ### Affected files
 
-- `tests/test_skill_uncertain_protocol.py` — **new**, ~70 LOC, 5
+- `tests/test_skill_uncertain_protocol.py` — **new**, ~60 LOC, 4
   tests. Parses SKILL.md as text; asserts structural invariants.
-- `skills/bicameral-sync/SKILL.md` — **modify**, add new subsection
-  under existing Step 2 (the "Resolve every pending compliance check"
-  section, currently at lines 41–125). Estimated +50 lines.
-- `pilot/mcp/skills/bicameral-sync/SKILL.md` — **modify**, mirror the
-  same change. Per `CLAUDE.md` rule: `pilot/mcp/skills/` is canonical;
-  `skills/bicameral-sync/SKILL.md` is the version reviewers actually
-  read in this repo. Both must change in the same commit.
+- `skills/bicameral-sync/SKILL.md` — **modify** (currently 150 LOC),
+  add new subsection under existing Step 2 (the "Resolve every pending
+  compliance check" section, currently at lines 41–125). Estimated
+  +50 lines (target ~200 LOC). **Note**: `skills/` is canonical on the
+  current branch; `CLAUDE.md`'s `pilot/mcp/skills/` reference is stale
+  (the directory does not exist) and slated for separate cleanup.
 - `docs/training/cosmetic-vs-semantic.md` — **new**, ~150 LOC. Concept
   training doc per `DEV_CYCLE.md` §8 (the matrix says training is
   required when a feature introduces a concept). Walks one Python
@@ -319,11 +318,8 @@ green.
    - `test_uncertain_subsection_states_axis_1_first_rule` — assert
      the subsection contains text equivalent to "axis 1 first" (the
      `not_relevant` short-circuit per D5 step 1).
-   - `test_pilot_skill_md_matches_skills_skill_md` — both copies of
-     SKILL.md have identical body content (canonical-source rule
-     from `CLAUDE.md`). Diff is whitespace-tolerant only.
 
-2. `skills/bicameral-sync/SKILL.md` and `pilot/mcp/skills/bicameral-sync/SKILL.md`:
+2. `skills/bicameral-sync/SKILL.md`:
    Insert a new `### 2.bis Uncertain-band sub-protocol (Phase 4 / #44)`
    subsection between current Step 2 and Step 3 ("Report"). The
    subsection contents reproduce the D5 rubric verbatim (declarative,
@@ -386,15 +382,15 @@ Estimated post-implementation file sizes:
 | File | Estimate | Razor cap | OK? |
 |---|---|---|---|
 | `tests/test_m3_benchmark_judge_corpus.py` | ~80 LOC | 250 | yes |
-| `tests/test_skill_uncertain_protocol.py` | ~70 LOC | 250 | yes |
+| `tests/test_skill_uncertain_protocol.py` | ~60 LOC | 250 | yes |
 | `tests/fixtures/m3_benchmark/cases.py` | 391 → ~430 LOC | 250 | **violates** |
-| `skills/bicameral-sync/SKILL.md` | 138 → ~190 LOC | n/a (markdown) | n/a |
-| `pilot/mcp/skills/bicameral-sync/SKILL.md` | mirror | n/a | n/a |
+| `skills/bicameral-sync/SKILL.md` | 150 → ~200 LOC | n/a (markdown) | n/a |
 | `docs/training/cosmetic-vs-semantic.md` | ~150 LOC | n/a (markdown) | n/a |
 
 **`cases.py` razor violation**: it's already at 391 LOC pre-Phase-1
 (legacy from Phase 5 of #61). This plan adds ~40 LOC to it. The
-`pyproject.toml` ruff config exempts `tests/fixtures/**`. Test
+`pyproject.toml` ruff config excludes the entire `tests/` directory
+(`exclude = ["tests", ...]`), which subsumes `tests/fixtures/`. Test
 fixture data files are explicitly out of scope for the razor per the
 shipped Phase 4 substantiation note ("Plan deviation: §Phase 5
 collapsed 30 paired files to a single `cases.py` data module — same
