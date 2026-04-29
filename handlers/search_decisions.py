@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import time
 
-from contracts import CodeRegionSummary, DecisionMatch, LinkCommitResponse, SearchDecisionsResponse, SyncMetrics
+from contracts import (
+    CodeRegionSummary,
+    DecisionMatch,
+    LinkCommitResponse,
+    SearchDecisionsResponse,
+    SyncMetrics,
+)
 from handlers.action_hints import generate_hints_for_search
 from handlers.link_commit import handle_link_commit
 

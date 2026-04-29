@@ -30,7 +30,6 @@ from ledger.client import LedgerClient
 from ledger.queries import relate_binds_to
 from ledger.schema import init_schema
 
-
 pytestmark = pytest.mark.phase2
 
 

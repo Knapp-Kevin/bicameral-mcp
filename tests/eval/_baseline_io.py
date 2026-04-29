@@ -27,9 +27,8 @@ from __future__ import annotations
 import json
 import os
 import platform
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-
 
 BASELINE_VERSION = "1"
 RELATIVE_THRESHOLD = 0.20
@@ -154,4 +153,4 @@ def regression_check(
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")

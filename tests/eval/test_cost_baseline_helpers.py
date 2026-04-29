@@ -28,7 +28,6 @@ from _synthetic_ledger import (  # noqa: E402  (sibling module)
 )
 from _token_count import count_tokens, count_tokens_json  # noqa: E402
 
-
 # ── Generator: determinism ──────────────────────────────────────────────
 
 

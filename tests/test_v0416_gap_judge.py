@@ -36,7 +36,6 @@ from handlers.gap_judge import (
 )
 from handlers.ingest import handle_ingest
 
-
 # ── Layer 1: pure rubric shape tests ────────────────────────────────
 
 

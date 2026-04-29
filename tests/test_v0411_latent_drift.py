@@ -30,7 +30,6 @@ from context import BicameralContext
 from handlers.link_commit import handle_link_commit
 from ledger.status import get_changed_files, get_changed_files_in_range
 
-
 # ── Helpers ─────────────────────────────────────────────────────────
 
 

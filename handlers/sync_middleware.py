@@ -17,7 +17,7 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -129,7 +129,7 @@ _STALE_PROPOSAL_DAYS = 14
 _BANNER_MAX_ITEMS = 10
 
 
-async def get_session_start_banner(ctx) -> "SessionStartBanner | None":
+async def get_session_start_banner(ctx) -> SessionStartBanner | None:
     """Return open-decision summary for session start, or None if nothing actionable.
 
     Fires exactly once per session (keyed on ctx._sync_state["session_started"]).
@@ -150,7 +150,7 @@ async def get_session_start_banner(ctx) -> "SessionStartBanner | None":
     except Exception:
         return None
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     drifted_rows = [r for r in rows if r.get("status") == "drifted"]
     proposal_rows = [
@@ -222,7 +222,7 @@ async def get_session_start_banner(ctx) -> "SessionStartBanner | None":
     )
 
 
-async def ensure_ledger_synced(ctx) -> "LinkCommitResponse | None":
+async def ensure_ledger_synced(ctx) -> LinkCommitResponse | None:
     """Sync ledger to HEAD if it has moved since the last sync in this process.
 
     Returns the LinkCommitResponse when a new commit was processed — callers
@@ -232,7 +232,7 @@ async def ensure_ledger_synced(ctx) -> "LinkCommitResponse | None":
     global _LAST_SYNCED_SHA
 
     try:
-        from handlers.link_commit import handle_link_commit, _read_current_head_sha
+        from handlers.link_commit import _read_current_head_sha, handle_link_commit
         live_head = _read_current_head_sha(getattr(ctx, "repo_path", "") or ".")
         if live_head and live_head != _LAST_SYNCED_SHA:
             result = await handle_link_commit(ctx, "HEAD")

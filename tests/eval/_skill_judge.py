@@ -27,7 +27,6 @@ from typing import Any
 
 import httpx
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_MD_PATH = REPO_ROOT / "skills" / "bicameral-preflight" / "SKILL.md"
 CACHE_DIR = Path(__file__).resolve().parent / "fixtures" / "skill_judge"

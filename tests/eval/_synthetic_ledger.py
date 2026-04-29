@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import random
 
-
 GENERATOR_VERSION = "1"
 
 

@@ -24,7 +24,6 @@ from adapters.ledger import get_ledger, reset_ledger_singleton
 from context import BicameralContext
 from handlers.history import handle_history
 
-
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 

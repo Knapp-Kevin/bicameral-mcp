@@ -55,7 +55,7 @@ def _detect_history_path(repo_path: Path, hint: str | None = None) -> Path:
         return repo_path
 
     raw = input(
-        f"\n  History storage path (default: same as repo — press Enter to skip):\n  > "
+        "\n  History storage path (default: same as repo — press Enter to skip):\n  > "
     ).strip()
     if not raw:
         return repo_path
@@ -673,7 +673,7 @@ def run_setup(repo_hint: str | None = None, history_hint: str | None = None) -> 
     # Step 3: Runner check
     command, _ = _detect_runner()
     if command not in ("bicameral-mcp",):
-        print(f"\n  Note: bicameral-mcp binary not found on PATH.")
+        print("\n  Note: bicameral-mcp binary not found on PATH.")
         print(f"  Using '{command} -m bicameral_mcp' as runner.")
         print("  Install for a cleaner setup: pip install bicameral-mcp")
 
@@ -878,6 +878,7 @@ def run_reset_wizard() -> int:
     then asks for explicit confirmation before wiping.
     """
     import asyncio
+
     import questionary
 
     print()
@@ -907,6 +908,7 @@ def run_reset_wizard() -> int:
 
     # Step 2: dry-run
     import os
+
     from context import BicameralContext
     from handlers.reset import handle_reset
 

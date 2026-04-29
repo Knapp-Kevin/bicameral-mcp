@@ -6,7 +6,6 @@ import pytest
 
 from codegenome.config import CodeGenomeConfig
 
-
 _ALL_FLAGS = (
     "BICAMERAL_CODEGENOME_ENABLED",
     "BICAMERAL_CODEGENOME_WRITE_IDENTITY_RECORDS",

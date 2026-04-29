@@ -18,7 +18,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # ── Skill telemetry diagnostic models ────────────────────────────────
 # One model per skill. extra="forbid" means the handler can detect and
 # echo back any field names the LLM sent that don't belong here.
@@ -403,8 +402,8 @@ class DoctorLedgerSummary(BaseModel):
 
 class DoctorResponse(BaseModel):
     scope: Literal["file", "branch", "empty"]
-    file_scan: "DetectDriftResponse | None" = None
-    branch_scan: "ScanBranchResponse | None" = None
+    file_scan: DetectDriftResponse | None = None
+    branch_scan: ScanBranchResponse | None = None
     ledger_summary: DoctorLedgerSummary | None = None
     action_hints: list[ActionHint] = []
 
@@ -534,10 +533,10 @@ class IngestResponse(BaseModel):
     stats: IngestStats
     created_decisions: list[CreatedDecision] = []
     pending_grounding_decisions: list[dict] = []
-    context_for_candidates: "list[ContextForCandidate]" = []
+    context_for_candidates: list[ContextForCandidate] = []
     source_cursor: SourceCursorSummary | None = None
-    judgment_payload: "GapJudgmentPayload | None" = None   # kept for backward compat
-    judgment_payloads: "list[GapJudgmentPayload]" = []     # one per feature_group topic
+    judgment_payload: GapJudgmentPayload | None = None   # kept for backward compat
+    judgment_payloads: list[GapJudgmentPayload] = []     # one per feature_group topic
     sync_status: LinkCommitResponse | None = None
 
 

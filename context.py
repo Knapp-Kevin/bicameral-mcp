@@ -93,7 +93,11 @@ class BicameralContext:
         from adapters.code_locator import get_code_locator
         from adapters.codegenome import get_codegenome
         from adapters.ledger import get_drift_analyzer, get_ledger
-        from code_locator_runtime import detect_authoritative_ref, get_repo_index_state, resolve_ref_sha
+        from code_locator_runtime import (
+            detect_authoritative_ref,
+            get_repo_index_state,
+            resolve_ref_sha,
+        )
         from codegenome.config import CodeGenomeConfig
 
         repo_path = os.getenv("REPO_PATH", ".")

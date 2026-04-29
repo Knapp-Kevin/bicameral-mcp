@@ -16,7 +16,6 @@ import pytest
 
 from code_locator.indexing.call_site_extractor import extract_call_sites
 
-
 # ── Per-language happy-path tests ────────────────────────────────────
 
 

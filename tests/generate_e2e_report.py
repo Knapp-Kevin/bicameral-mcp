@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 
 E2E_DIR = Path(__file__).parent.parent / "test-results" / "e2e"
@@ -317,7 +317,7 @@ def _render_graph_section(graph: dict) -> str:
 def generate() -> str:
     global _graph_counter
     _graph_counter = 0
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     sections_html = ""
     total_artifacts = 0

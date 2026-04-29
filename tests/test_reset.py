@@ -17,7 +17,6 @@ from adapters.ledger import get_ledger, reset_ledger_singleton
 from context import BicameralContext
 from handlers.reset import handle_reset
 
-
 # ── Helpers ─────────────────────────────────────────────────────────
 
 

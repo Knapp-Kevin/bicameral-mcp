@@ -25,7 +25,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
 DATASET = Path(__file__).parent / "preflight_dataset.jsonl"
 CATALOG = Path(__file__).parent.parent.parent / "docs" / "preflight-failure-scenarios.md"
 

@@ -7,7 +7,7 @@ Auto-syncs the ledger to HEAD before returning status.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from contracts import CodeRegionSummary, DecisionStatusEntry, DecisionStatusResponse
 
@@ -69,7 +69,7 @@ async def handle_decision_status(
 
     return DecisionStatusResponse(
         ref=ref,
-        as_of=datetime.now(timezone.utc).isoformat(),
+        as_of=datetime.now(UTC).isoformat(),
         summary=summary,
         decisions=entries,
     )

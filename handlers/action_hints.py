@@ -41,7 +41,6 @@ from contracts import (
     SearchDecisionsResponse,
 )
 
-
 # ── Message variants ───────────────────────────────────────────────
 
 

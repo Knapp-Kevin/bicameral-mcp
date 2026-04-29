@@ -30,7 +30,6 @@ from ledger.canonical import (
     canonicalize_text,
 )
 
-
 # ── Source ref canonicalization ─────────────────────────────────────
 
 

@@ -66,9 +66,9 @@ def get_ledger():
         mode = _read_collaboration_mode(repo_path)
 
         if mode == "team":
-            from events.writer import EventFileWriter, _get_git_email
             from events.materializer import EventMaterializer
             from events.team_adapter import TeamWriteAdapter
+            from events.writer import EventFileWriter, _get_git_email
 
             # BICAMERAL_DATA_PATH redirects all history (events + local state)
             # to a separate directory — typically a private parent repo when

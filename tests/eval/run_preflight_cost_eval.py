@@ -56,7 +56,6 @@ from _baseline_io import (  # noqa: E402  (sibling module)
 from _synthetic_ledger import GENERATOR_VERSION, generate_ledger  # noqa: E402
 from _token_count import count_tokens, count_tokens_json  # noqa: E402
 
-
 _C3_WARMUP = 10
 _C3_SAMPLES = 100
 

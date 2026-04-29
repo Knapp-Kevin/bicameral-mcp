@@ -16,7 +16,6 @@ import pytest
 
 from adapters.code_locator import get_code_locator
 
-
 # ── Real adapter tests (Phase 1 — require indexed repo) ─────────────
 
 

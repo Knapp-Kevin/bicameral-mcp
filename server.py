@@ -36,19 +36,19 @@ from mcp.server.models import InitializationOptions
 from mcp.types import TextContent, Tool
 
 from context import BicameralContext
-from ledger.schema import DestructiveMigrationRequired, SchemaVersionTooNew
+from dashboard.server import get_dashboard_server
 from handlers.bind import handle_bind
 from handlers.gap_judge import handle_judge_gaps
+from handlers.history import handle_history
 from handlers.ingest import handle_ingest
 from handlers.link_commit import handle_link_commit
 from handlers.preflight import handle_preflight
-from handlers.reset import handle_reset
 from handlers.ratify import handle_ratify
+from handlers.reset import handle_reset
 from handlers.resolve_collision import handle_resolve_collision
 from handlers.resolve_compliance import handle_resolve_compliance
-from handlers.history import handle_history
 from handlers.update import get_update_notice, handle_update
-from dashboard.server import get_dashboard_server
+from ledger.schema import DestructiveMigrationRequired, SchemaVersionTooNew
 
 SERVER_NAME = "bicameral-mcp"
 
@@ -781,8 +781,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "bicameral.skill_end":
         from pydantic import ValidationError
-        from telemetry import record_skill_event
+
         from contracts import SKILL_DIAGNOSTIC_MODELS
+        from telemetry import record_skill_event
         session_id = arguments["session_id"]
         skill_name = arguments["skill_name"]
         errored = arguments.get("errored", False)

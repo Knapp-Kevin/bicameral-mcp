@@ -30,7 +30,6 @@ from context import BicameralContext
 from handlers.ingest import handle_ingest
 from handlers.link_commit import handle_link_commit
 
-
 # ── Tiny git repo fixture with main + feature branch ─────────────────
 
 

@@ -31,20 +31,16 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from contracts import (
-    ActionHint,
     BriefDecision,
-    BriefDivergence,
-    BriefGap,
     CodeRegionSummary,
     DecisionMatch,
     PreflightResponse,
 )
-from handlers.analysis import _to_brief_decision
 from handlers.action_hints import generate_hints_from_findings
+from handlers.analysis import _to_brief_decision
 
 logger = logging.getLogger(__name__)
 
@@ -254,8 +250,9 @@ async def handle_preflight(
 
     # V1 A3: time the call locally so the metric reflects THIS handler's catch-up.
     import time as _time
-    from handlers.sync_middleware import ensure_ledger_synced
+
     from contracts import SyncMetrics
+    from handlers.sync_middleware import ensure_ledger_synced
     _t0 = _time.perf_counter()
     await ensure_ledger_synced(ctx)
     sync_metrics = SyncMetrics(

@@ -16,13 +16,14 @@ No LLM. No embeddings. Purely structural.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable, Literal
+from typing import Literal
+
+from code_locator.indexing.call_site_extractor import extract_call_sites
 
 from .continuity import _jaccard
 from .diff_categorizer import categorize_diff
-from code_locator.indexing.call_site_extractor import extract_call_sites
-
 
 # ── Constants pinned by issue #61 ────────────────────────────────────
 

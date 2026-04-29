@@ -36,10 +36,9 @@ from contracts import (
     SearchDecisionsResponse,
 )
 from handlers.action_hints import (
-    generate_hints_from_findings,
     generate_hints_for_search,
+    generate_hints_from_findings,
 )
-
 
 # ── Helper factories ────────────────────────────────────────────────
 
@@ -311,7 +310,7 @@ def test_action_hints_default_to_empty_list():
 ])
 def test_guided_mode_env_truthy_set(env_val: str, expected: bool):
     """Truthy/falsy env values map correctly via the helper sets."""
-    from context import _GUIDED_MODE_TRUTHY, _GUIDED_MODE_FALSY
+    from context import _GUIDED_MODE_FALSY, _GUIDED_MODE_TRUTHY
     is_truthy = env_val.strip().lower() in _GUIDED_MODE_TRUTHY
     if expected:
         assert is_truthy

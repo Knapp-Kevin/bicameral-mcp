@@ -18,7 +18,6 @@ from handlers.bind import handle_bind
 from ledger.client import LedgerClient
 from ledger.schema import init_schema, migrate
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 

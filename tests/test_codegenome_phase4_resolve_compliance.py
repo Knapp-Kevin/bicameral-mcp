@@ -16,7 +16,7 @@ import pytest
 from contracts import ComplianceVerdict
 from handlers.resolve_compliance import handle_resolve_compliance
 from ledger.client import LedgerClient
-from ledger.queries import upsert_decision, upsert_code_region, relate_binds_to
+from ledger.queries import relate_binds_to, upsert_code_region, upsert_decision
 from ledger.schema import init_schema, migrate
 
 pytestmark = pytest.mark.phase2

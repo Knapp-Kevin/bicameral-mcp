@@ -45,7 +45,6 @@ from handlers.detect_drift import handle_detect_drift
 from handlers.ingest import handle_ingest
 from handlers.link_commit import handle_link_commit, invalidate_sync_cache
 
-
 # ── Helpers ──────────────────────────────────────────────────────────
 
 

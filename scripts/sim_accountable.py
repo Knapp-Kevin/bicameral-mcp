@@ -11,7 +11,13 @@ Covers:
   Run 7  — Search in surrealkv:// persistent mode (fix 3 verification)
   Run 8  — pending_compliance_checks → resolve_compliance → reflected status (v0.9.3 skill gap fix)
 """
-import sys, asyncio, os, tempfile, shutil, pathlib
+import asyncio
+import os
+import pathlib
+import shutil
+import sys
+import tempfile
+
 sys.path.insert(0, '/Users/jinhongkuan/github/bicameral/pilot/mcp')
 
 REPO = '/Users/jinhongkuan/github/Accountable-App-3.0'
@@ -27,7 +33,9 @@ def section(title, body):
 
 
 def make_fresh_ledger():
-    import importlib, adapters.ledger as _al
+    import importlib
+
+    import adapters.ledger as _al
     importlib.reload(_al)
     return _al.get_ledger()
 
@@ -152,7 +160,7 @@ async def run_history_verify(ctx):
             if lvl is not None:
                 level_ok = True
 
-    body += f"\nFix 2 verdict:\n"
+    body += "\nFix 2 verdict:\n"
     body += f"  fg.name populated: {name_ok} (was '?' in v1 — fixed)\n"
     body += f"  d.decision_level populated: {level_ok} (was absent in v1 — fixed)\n"
     section("Run 3 — History + fix-2 verification (HistoryDecision.decision_level)", body)
@@ -440,7 +448,7 @@ async def run_search_persistent():
             results_map[q] = getattr(r, 'decisions', []) or []
 
         total_matches = sum(len(v) for v in results_map.values())
-        body = f"DB: surrealkv:// (persistent, temp path)\nIngested 3 decisions, ran 3 queries.\n\n"
+        body = "DB: surrealkv:// (persistent, temp path)\nIngested 3 decisions, ran 3 queries.\n\n"
         for q, matches in results_map.items():
             body += f"Query: '{q}'\n  Matches: {len(matches)}\n"
             for d in matches[:2]:
@@ -660,7 +668,8 @@ async def run_signoff_status_decoupling():
     C. resolve_collision supersede merges signoff dict — ratification record preserved
     D. History shows superseded decisions with last code-compliance status + signoff_state
     """
-    import subprocess, datetime as dt
+    import datetime as dt
+    import subprocess
     tmpdir = tempfile.mkdtemp(prefix='bicam_signoff_test_')
     try:
         subprocess.run(['git', 'init', '-b', 'main'], cwd=tmpdir, check=True, capture_output=True)
@@ -739,7 +748,7 @@ async def run_signoff_status_decoupling():
         # ── B: session-start banner detects stale proposal via signoff ────────
         # Backdate the signoff to simulate 15-day-old proposal
         stale_created = (
-            dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=15)
+            dt.datetime.now(dt.UTC) - dt.timedelta(days=15)
         ).isoformat()
         await inner._client.execute(
             f"UPDATE {did} SET signoff = $s",

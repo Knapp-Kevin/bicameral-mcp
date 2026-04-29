@@ -14,11 +14,12 @@ Covers ``handlers.link_commit._run_drift_classification_pass``:
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from contracts import PendingComplianceCheck, PreClassificationHint
+import pytest
+
 from codegenome.drift_service import DriftClassificationOutcome
+from contracts import PendingComplianceCheck, PreClassificationHint
 
 
 def _make_pending(decision_id="d:1", region_id="r:1") -> PendingComplianceCheck:

@@ -38,7 +38,6 @@ from handlers.search_decisions import handle_search_decisions
 from handlers.sync_middleware import ensure_ledger_synced, get_session_start_banner
 from ledger.queries import project_decision_status
 
-
 # ── Shared helpers ───────────────────────────────────────────────────
 
 

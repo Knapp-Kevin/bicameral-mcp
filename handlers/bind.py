@@ -1,7 +1,9 @@
 """Handler for bicameral.bind — caller-LLM-driven code region binding."""
 
 from __future__ import annotations
+
 import logging
+
 from contracts import BindResponse, BindResult, PendingComplianceCheck, SyncMetrics
 from handlers.sync_middleware import repo_write_barrier
 

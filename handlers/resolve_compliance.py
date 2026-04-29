@@ -24,7 +24,7 @@ will become a hard error once the codebase fully migrates to flow_id usage.
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from collections.abc import Iterable
 
 from contracts import (
     ComplianceVerdict,

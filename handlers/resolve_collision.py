@@ -21,7 +21,7 @@ project_decision_status (the double-entry authority) after each action.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from contracts import ResolveCollisionResponse
 from ledger.queries import (
@@ -55,7 +55,7 @@ async def handle_resolve_collision(
     client = inner._client
 
     _session_id = getattr(ctx, "session_id", None) or ""
-    _now_iso = datetime.now(timezone.utc).isoformat()
+    _now_iso = datetime.now(UTC).isoformat()
 
     # ── Collision mode ────────────────────────────────────────────────────
     if action is not None:

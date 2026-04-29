@@ -227,8 +227,8 @@ def test_llm_match_parses_valid_response_into_pairs():
 def test_compute_extraction_metrics_dispatches_to_llm(monkeypatch):
     """When matcher='llm', compute_extraction_metrics calls llm_match
     instead of rapidfuzz. We stub llm_match so no network is needed."""
-    import _extraction_metrics
     import _extraction_matcher
+    import _extraction_metrics
 
     actual = _e(["X", "Y", "Z"])
     fixture = _f(["P", "Q"])

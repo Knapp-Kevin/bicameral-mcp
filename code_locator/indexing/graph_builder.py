@@ -8,16 +8,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
 
 from .sqlite_store import SymbolDB
 from .symbol_extractor import (
     EXTENSION_LANGUAGE,
-    SKIP_DIRS,
     _get_parser,
     _node_text,
 )
-
 
 # ── Contains edges ───────────────────────────────────────────────────
 
@@ -250,7 +247,7 @@ def build_graph(db: SymbolDB, repo_path: str) -> int:
     ).fetchall()
 
     # Map: name -> list of symbol ids (multiple symbols can have the same name)
-    name_to_ids: Dict[str, list[int]] = {}
+    name_to_ids: dict[str, list[int]] = {}
     for sym in all_symbols:
         name = sym[1]
         if name not in name_to_ids:
@@ -274,7 +271,7 @@ def build_graph(db: SymbolDB, repo_path: str) -> int:
             continue
 
         try:
-            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(abs_path, encoding="utf-8", errors="replace") as f:
                 source = f.read()
         except OSError:
             continue
@@ -301,7 +298,7 @@ def build_graph(db: SymbolDB, repo_path: str) -> int:
         for row in file_all_symbols:
             all_file_sym_ids.add(row[0])
 
-        seen_import_edges: Set[Tuple[int, int]] = set()
+        seen_import_edges: set[tuple[int, int]] = set()
         for imp_name in imported_names:
             target_ids = name_to_ids.get(imp_name, [])
             for target_id in target_ids:
@@ -324,7 +321,7 @@ def build_graph(db: SymbolDB, repo_path: str) -> int:
             (rel_path,),
         ).fetchall()
 
-        seen_invoke_edges: Set[Tuple[int, int]] = set()
+        seen_invoke_edges: set[tuple[int, int]] = set()
         for func in func_symbols:
             func_id = func[0]
             func_start = func[2]

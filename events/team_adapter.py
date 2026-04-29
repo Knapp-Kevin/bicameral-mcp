@@ -8,7 +8,6 @@ All read operations pass through directly.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from .materializer import EventMaterializer
 from .writer import EventFileWriter

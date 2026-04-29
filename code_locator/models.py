@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-
 # ── Input (from Agent A: Transcript Extractor) ──────────────────────
 
 

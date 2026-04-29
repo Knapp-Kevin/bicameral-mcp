@@ -17,7 +17,6 @@ from contracts import (
     DecisionMatch,
 )
 
-
 # ── Divergence detection heuristics ─────────────────────────────────
 
 _NEGATION_PAIRS: list[tuple[str, str]] = [

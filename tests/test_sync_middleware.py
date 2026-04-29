@@ -1,7 +1,7 @@
 """Tests for sync_middleware — session-start banner and ledger catch-up (v0.6.1)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,7 +49,7 @@ def _ungrounded(decision_id="decision:2", description="Billing uses Stripe", sou
 
 def _proposal(decision_id="decision:3", description="Rate limit is 100 req/s",
               source_ref="sprint-notes", days_old=15):
-    created_at = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
+    created_at = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
     return {
         "decision_id": decision_id,
         "description": description,
@@ -117,7 +117,7 @@ async def test_banner_truncates_at_10_items_with_drifted_prioritized():
     assert banner.truncated is True
     # All 3 drifted must be present in the truncated view
     assert sum(1 for i in banner.items if i["status"] == "drifted") == 3
-    assert f"top 10" in banner.message
+    assert "top 10" in banner.message
 
 
 @pytest.mark.asyncio
@@ -251,6 +251,7 @@ async def test_repo_write_barrier_serializes_same_repo(_reset_locks):
     bind call cannot observe the ledger while the first is mid-write.
     """
     import asyncio
+
     from handlers.sync_middleware import repo_write_barrier
 
     events: list[str] = []
@@ -272,6 +273,7 @@ async def test_repo_write_barrier_serializes_same_repo(_reset_locks):
 async def test_repo_write_barrier_allows_different_repos_concurrently(_reset_locks):
     """Different repos use different locks and MUST run in parallel."""
     import asyncio
+
     from handlers.sync_middleware import repo_write_barrier
 
     events: list[str] = []
@@ -295,6 +297,7 @@ async def test_repo_write_barrier_allows_different_repos_concurrently(_reset_loc
 async def test_repo_write_barrier_releases_on_exception(_reset_locks):
     """If the body raises, the lock must still release so the next caller proceeds."""
     import asyncio
+
     from handlers.sync_middleware import repo_write_barrier
 
     ctx = _barrier_ctx("/repo/a")
@@ -315,6 +318,7 @@ async def test_repo_write_barrier_releases_on_exception(_reset_locks):
 async def test_repo_write_barrier_falls_back_when_repo_path_missing(_reset_locks):
     """Missing ctx.repo_path falls back to a default key and still serializes."""
     import asyncio
+
     from handlers.sync_middleware import repo_write_barrier
 
     class _Bare:
@@ -343,6 +347,7 @@ async def test_repo_write_barrier_falls_back_when_repo_path_missing(_reset_locks
 async def test_repo_write_barrier_reports_held_ms(_reset_locks):
     """BarrierTiming.held_ms is populated on exit and is non-negative."""
     import asyncio
+
     from handlers.sync_middleware import repo_write_barrier
 
     ctx = _barrier_ctx("/repo/a")

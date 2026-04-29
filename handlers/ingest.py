@@ -7,6 +7,7 @@ Auto-grounding removed in caller-LLM binding flow (v0.5.1+).
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
 from contracts import (
     ContextForCandidate,
@@ -243,8 +244,8 @@ async def handle_ingest(
 
     payload = ctx.code_graph.resolve_symbols(payload)
 
-    from datetime import datetime, timezone
-    _now_iso = datetime.now(timezone.utc).isoformat()
+    from datetime import datetime
+    _now_iso = datetime.now(UTC).isoformat()
     _session_id = getattr(ctx, "session_id", None) or ""
 
     # v0.7.0: every new ingest enters as 'proposed' by default.

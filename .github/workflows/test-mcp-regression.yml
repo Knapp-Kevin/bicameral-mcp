@@ -10,7 +10,12 @@ env:
 jobs:
   mcp-tests:
     name: MCP Regression Suite
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     # Needed so ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }} / ANTHROPIC_API_KEY
     # (environment secrets scoped to `ci-test`) is injected into the M1
     # extraction step. The env is gate-free so this does not block
@@ -19,6 +24,7 @@ jobs:
     env:
       SURREAL_URL: 'memory://'
       REPO_PATH: ${{ github.workspace }}
+      BICAMERAL_SKIP_CONSENT_NOTICE: '1'
     steps:
       - uses: actions/checkout@v4
 

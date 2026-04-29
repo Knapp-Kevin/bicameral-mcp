@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import socket
 from pathlib import Path
 from typing import Any
@@ -191,7 +190,7 @@ class DashboardServer:
             while True:
                 try:
                     data = await asyncio.wait_for(q.get(), timeout=30.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Keep connection alive with an SSE comment; loop and keep waiting.
                     writer.write(b": keepalive\n\n")
                     await writer.drain()

@@ -13,7 +13,6 @@ import pytest
 
 from ledger.ast_diff import is_cosmetic_change
 
-
 # ── Whitelist: must return True ─────────────────────────────────────
 
 

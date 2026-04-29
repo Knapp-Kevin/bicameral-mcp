@@ -40,7 +40,6 @@ from _skill_judge import (  # noqa: E402  (sibling module)
     judge_relevance,
 )
 
-
 DATASET = Path(__file__).parent / "preflight_skill_dataset.jsonl"
 
 REQUIRED_KEYS = {"id", "axis", "title", "topic", "ledger", "expect_relevant"}

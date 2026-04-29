@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from typing import Optional
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def _save_cache(data: dict) -> None:
         pass
 
 
-def _fetch_recommended_version() -> Optional[str]:
+def _fetch_recommended_version() -> str | None:
     """Fetch RECOMMENDED_VERSION from GitHub with a 1-hour cache."""
     cache = _load_cache()
     now = time.time()
@@ -134,7 +134,8 @@ def _apply_pending_migration(repo_path: str) -> dict:
       replay_plan: list[dict]     (only when migrated=True)
       error: str                  (only on failure)
     """
-    import tempfile, os
+    import os
+    import tempfile
     tmp = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -191,7 +192,7 @@ def _reinstall_skills(repo_path: str) -> int:
             f"rp = Path(r'{repo_path}'); "
             f"n = _install_skills(rp); "
             f"_install_claude_hooks(rp); "
-            + (f"_install_git_post_commit_hook(rp); " if guided else "")
+            + ("_install_git_post_commit_hook(rp); " if guided else "")
             + "print(n)"
         )
         result = subprocess.run(

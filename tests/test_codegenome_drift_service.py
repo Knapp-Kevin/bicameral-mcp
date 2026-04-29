@@ -17,16 +17,15 @@ Covers ``codegenome.drift_service.evaluate_drift_classification``:
 from __future__ import annotations
 
 import inspect
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from codegenome.drift_service import (
     DriftClassificationContext,
     DriftClassificationOutcome,
     evaluate_drift_classification,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────
 

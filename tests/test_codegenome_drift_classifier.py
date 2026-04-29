@@ -20,19 +20,18 @@ import inspect
 
 import pytest
 
+from codegenome.diff_categorizer import categorize_diff
 from codegenome.drift_classifier import (
-    DriftClassification,
-    _signal_signature,
-    _signal_neighbors,
-    _signal_diff_lines,
-    _signal_no_new_calls,
-    _verdict_from_score,
-    _build_evidence_refs,
     _SUPPORTED_LANGUAGES,
+    DriftClassification,
+    _build_evidence_refs,
+    _signal_diff_lines,
+    _signal_neighbors,
+    _signal_no_new_calls,
+    _signal_signature,
+    _verdict_from_score,
     classify_drift,
 )
-from codegenome.diff_categorizer import categorize_diff
-
 
 # ── Helper: build a classify_drift call with sensible defaults ───────
 

@@ -11,7 +11,7 @@ No SDK types (RecordID etc.) leak through — normalization happens in client.py
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .client import LedgerClient, LedgerError
 
@@ -132,7 +132,7 @@ async def upsert_source_cursor(
         "source_scope": source_scope,
         "cursor": cursor,
         "last_source_ref": last_source_ref,
-        "synced_at": str(datetime.now(timezone.utc).isoformat()),
+        "synced_at": str(datetime.now(UTC).isoformat()),
         "status": status,
         "error": error,
     }
@@ -1444,7 +1444,7 @@ async def get_context_for_ready_decisions(
 # shape and raises ``LedgerError`` on mismatch — a single choke point
 # per call instead of trusting upstream callers.
 
-import re as _re
+import re as _re  # noqa: E402 — module-private import kept adjacent to its usage block
 
 _RECORD_ID_RE = _re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:[A-Za-z0-9_\-]+$")
 

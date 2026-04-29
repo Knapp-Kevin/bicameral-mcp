@@ -289,8 +289,9 @@ async def handle_history(
     """
     # V1 A3: time the catch-up locally so history can report it.
     import time as _time
-    from handlers.sync_middleware import ensure_ledger_synced
+
     from contracts import SyncMetrics
+    from handlers.sync_middleware import ensure_ledger_synced
     _t0 = _time.perf_counter()
     await ensure_ledger_synced(ctx)
     sync_metrics = SyncMetrics(

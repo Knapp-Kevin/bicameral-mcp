@@ -11,6 +11,7 @@ This is the baseline implementation. Future implementations:
 from __future__ import annotations
 
 from ports import DriftResult
+
 from .status import compute_content_hash, derive_status, resolve_symbol_lines
 
 

@@ -23,13 +23,13 @@ Failure-isolated: any exception → ``_NO_OUTCOME``.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from contracts import PreClassificationHint
 
 from .adapter import CodeGenomeAdapter
-from .continuity_service import _identity_from_dict, _load_best_identity
+from .continuity_service import _load_best_identity
 from .drift_classifier import DriftClassification, classify_drift
 
 logger = logging.getLogger(__name__)

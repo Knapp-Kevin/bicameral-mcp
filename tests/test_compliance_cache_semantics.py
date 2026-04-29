@@ -15,7 +15,6 @@ from ledger.queries import get_compliance_verdict
 from ledger.schema import init_schema, migrate
 from ledger.status import derive_status
 
-
 # ── Pure unit tests: derive_status decision table ────────────────────
 
 

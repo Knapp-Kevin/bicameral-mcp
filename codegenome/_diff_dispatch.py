@@ -13,10 +13,7 @@ back to its language module's text-only heuristics.
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
-
-from code_locator.indexing.symbol_extractor import _get_parser, _LANG_PACKAGE_MAP
-
+from code_locator.indexing.symbol_extractor import _LANG_PACKAGE_MAP, _get_parser
 
 # Per-language tree-sitter node-type tables.
 #
@@ -102,7 +99,7 @@ def _build_line_starts(code: bytes) -> list[int]:
 
 def _flag_signature_lines(
     node, code: bytes, line_starts: list[int],
-    sig_node_types: tuple, body_field: str, flags: Dict[int, Tuple[bool, bool]],
+    sig_node_types: tuple, body_field: str, flags: dict[int, tuple[bool, bool]],
 ) -> None:
     """Walk the tree; for each function-like node, mark its signature
     lines (everything from node start to body start) with the
@@ -142,7 +139,7 @@ def _flag_signature_lines(
 def _flag_docstring_lines(
     node, code: bytes, line_starts: list[int],
     sig_node_types: tuple, body_field: str, doc_type: str,
-    flags: Dict[int, Tuple[bool, bool]],
+    flags: dict[int, tuple[bool, bool]],
 ) -> None:
     """For each function-like node, find the first statement of its
     body; if that statement wraps a string-literal node of the
@@ -178,7 +175,7 @@ def _flag_docstring_lines(
 
 def compute_slot_flags(
     body: str, language: str,
-) -> Dict[int, Tuple[bool, bool]]:
+) -> dict[int, tuple[bool, bool]]:
     """Return ``{line_number: (in_function_signature, in_docstring_slot)}``.
 
     Lines absent from the dict have both flags ``False``. Caller (the
@@ -199,7 +196,7 @@ def compute_slot_flags(
     except Exception:
         return {}
     line_starts = _build_line_starts(code)
-    flags: Dict[int, Tuple[bool, bool]] = {}
+    flags: dict[int, tuple[bool, bool]] = {}
     _flag_signature_lines(
         tree.root_node, code, line_starts,
         config["signature_nodes"], config["body_field"], flags,

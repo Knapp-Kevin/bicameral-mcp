@@ -13,7 +13,7 @@ decision that supersedes the previous one — clean audit trail, no rollback.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from contracts import RatifyResponse
 from ledger.queries import decision_exists, project_decision_status, update_decision_status
@@ -69,7 +69,7 @@ async def handle_ratify(
 
     head_ref = getattr(ctx, "authoritative_sha", "") or ""
     session_id = getattr(ctx, "session_id", None) or ""
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
 
     if action == "ratify":
         signoff = {

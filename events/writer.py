@@ -17,9 +17,9 @@ import json
 import logging
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, IO
+from typing import IO, Any
 
 from pydantic import BaseModel, Field
 
@@ -74,7 +74,7 @@ class EventEnvelope(BaseModel):
     schema_version: int = 2
     event_type: str
     author: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     payload: dict[str, Any] = Field(default_factory=dict)
 
 

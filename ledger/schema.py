@@ -14,6 +14,7 @@ Schema migrations: await migrate(client)
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
 from .client import LedgerClient, LedgerError
 
@@ -534,9 +535,9 @@ async def _migrate_v5_to_v6(client: LedgerClient) -> None:
 
     New ingests after v0.7.0 write signoff = {state:'proposed', ...} by default.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
 
     try:
         all_decisions = await client.query(
@@ -703,8 +704,8 @@ async def _migrate_v9_to_v10(client: LedgerClient) -> None:
        code-compliance status will be re-derived on the next drift sweep.
     3. Tighten the ASSERT constraint on the status field.
     """
-    from datetime import datetime, timezone
-    _now = datetime.now(timezone.utc).isoformat()
+    from datetime import datetime
+    _now = datetime.now(UTC).isoformat()
 
     # Step 1: superseded decisions — move superseded into signoff
     superseded_rows = await client.query(

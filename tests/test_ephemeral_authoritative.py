@@ -50,7 +50,6 @@ from handlers.ingest import handle_ingest
 from handlers.link_commit import handle_link_commit, invalidate_sync_cache
 from handlers.resolve_compliance import handle_resolve_compliance
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 

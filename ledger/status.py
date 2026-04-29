@@ -160,7 +160,6 @@ def compute_content_hash(
     if content is None:
         return None
     # Validate line range (warn but still hash — shorter file = drift signal)
-    line_count = len(content.splitlines())
     if start_line < 1 or end_line < start_line:
         logger.warning(
             "[status] Invalid range %d:%d for %s",

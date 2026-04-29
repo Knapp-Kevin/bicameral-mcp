@@ -22,12 +22,12 @@ hashes — to isolate the diff_lines + neighbors signals.
 
 from __future__ import annotations
 
-import pytest
-
 import sys
 from pathlib import Path
 
-from codegenome.drift_classifier import classify_drift, DriftClassification
+import pytest
+
+from codegenome.drift_classifier import DriftClassification, classify_drift
 
 sys.path.insert(0, str(Path(__file__).parent / "fixtures" / "m3_benchmark"))
 from cases import CASES  # noqa: E402

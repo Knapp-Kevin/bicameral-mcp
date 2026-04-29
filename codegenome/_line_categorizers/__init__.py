@@ -42,7 +42,7 @@ def categorize(
     that does NOT count toward the cosmetic-leaning ``diff_lines``
     signal weight.
     """
-    from . import python, javascript, typescript, go, rust, java, c_sharp
+    from . import c_sharp, go, java, javascript, python, rust, typescript
 
     table = {
         "python":     python.categorize_line,

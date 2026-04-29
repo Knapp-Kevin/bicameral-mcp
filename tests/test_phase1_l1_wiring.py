@@ -31,7 +31,6 @@ from context import BicameralContext
 from handlers.decision_status import handle_decision_status
 from handlers.link_commit import handle_link_commit
 
-
 # ── Tiny git repo fixture ─────────────────────────────────────────────
 
 

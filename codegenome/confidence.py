@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-
 # Default weights for the confidence model defined in the architecture
 # plan; referenced by Phase 3+4 callers (continuity, drift classifier).
 # Lives here so future phases import from one place without restructuring.

@@ -17,11 +17,10 @@ from .client import LedgerClient
 from .queries import (
     create_code_region,
     decision_exists,
-    delete_binds_to_edge,
     find_subject_identities_for_decision,
     get_all_decisions,
-    get_decision_level,
     get_compliance_verdict,
+    get_decision_level,
     get_decisions_for_file,
     get_decisions_for_files,
     get_pending_decisions_with_regions,
@@ -36,7 +35,6 @@ from .queries import (
     lookup_vocab_cache,
     project_decision_status,
     promote_ephemeral_verdict,
-    region_exists,
     relate_binds_to,
     relate_has_identity,
     relate_has_version,
@@ -68,7 +66,6 @@ from .status import (
     resolve_head,
     resolve_ref,
 )
-
 
 _CODE_BODY_LINE_CAP = 200
 
@@ -210,7 +207,6 @@ class SurrealDBLedgerAdapter:
 
     async def decision_exists(self, decision_id: str) -> bool:
         await self._ensure_connected()
-        from .queries import decision_exists
         return await decision_exists(self._client, decision_id)
 
     async def get_decision_description(self, decision_id: str) -> str:
