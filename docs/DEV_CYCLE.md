@@ -107,10 +107,19 @@ work"*. Promoting too many issues to `P0` dilutes the signal.
 | `blocked` | dark grey | Temporarily blocked by another issue or external dependency. Always include a comment naming the blocker. |
 | `parked` | purple | Known issue, deferred indefinitely (external blocker, strategic pause, cost > benefit at current scale). Not abandoned, but not on a roadmap. **Only maintainers apply `parked`.** |
 
-State labels are *orthogonal* to priority. A `P1 + blocked` issue is high-priority
-work waiting on a dependency; a `P3 + parked` issue is a low-value idea we're
-not pursuing now but don't want to lose. **Never close a `parked` issue** —
-keep it open as a known-deferred record so future filers find it.
+State labels are mostly orthogonal to priority — with one exception:
+
+- **`triage` and `blocked` coexist with priority.** A `P1 + blocked` issue is
+  high-priority work waiting on a dependency; a `triage` issue gets a priority
+  label as soon as a maintainer assesses it.
+- **`parked` supersedes priority.** Don't apply both. A parked issue is, by
+  definition, not on the priority axis — it's deferred indefinitely. Adding
+  `P3` to a `parked` issue is redundant and clutters the label list. If a
+  parked issue ever becomes actionable, drop `parked` and assign a real
+  priority at that moment.
+
+**Never close a `parked` issue** — keep it open as a known-deferred record
+so future filers find it.
 
 The existing `merged-to-dev` label (post-merge status, not pre-merge state)
 remains separate from this axis. See §6.8.
