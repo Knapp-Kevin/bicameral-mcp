@@ -1,11 +1,61 @@
-# System State — post-Phase-4-substantiation snapshot
+# System State — post-#44-substantiation snapshot
 
 **Generated**: 2026-04-29
-**HEAD**: `09f30a8` (Phase 4 / #61 sealed; rebased on `dev` after #71/#73/#79–#84 merged)
-**Branch**: `claude/codegenome-phase-4-qor`
-**Tracked PR**: targets `BicameralAI/dev` (Phase 4 / Issue #61); aggregate `dev → main` PR is downstream
+**HEAD**: `f230331` (#44 implementation sealed)
+**Branch**: `feat/44-llm-drift-judge` (off `BicameralAI/dev` post-Phase-4 seal `200dbd5`)
+**Tracked PR**: will target `BicameralAI/dev` (Issue #44); aggregate `dev → main` PR is downstream
 **Genesis hash**: `29dfd085...`
-**Phase 4 seal**: `0ebcf69b...`
+**#44 seal**: see Entry #16 (computed during this substantiation)
+
+## #44 (LLM drift judge) implementation — 7 files, ~549 LOC, 8 new tests, 40/40 targeted regression
+
+| Phase | Files | New tests | Commit |
+|---|---|---|---|
+| 1 — M3 benchmark `expected_judge` ground-truth labels | 1 new + 1 modified | 4 | `f230331` |
+| 2 — bicameral-sync §2.bis Uncertain-band sub-protocol + training doc | 1 new test + 1 modified skill + 2 new docs | 4 | `f230331` |
+
+### Files in scope
+
+**New** (5):
+- `tests/test_m3_benchmark_judge_corpus.py` (83 LOC, 4 tests)
+- `tests/test_skill_uncertain_protocol.py` (96 LOC, 4 tests)
+- `docs/training/cosmetic-vs-semantic.md` (198 LOC, training doc)
+- `docs/training/README.md` (49 LOC, training index — soft-deps on PR #93)
+- `plan-codegenome-llm-drift-judge.md` (417 LOC, plan; committed at `b15c9ef`/`d846a4a`)
+
+**Modified** (3):
+- `tests/fixtures/m3_benchmark/cases.py` (391 → 431 LOC, expected_judge added to 10 uncertain cases)
+- `skills/bicameral-sync/SKILL.md` (150 → 211 LOC, §2.bis Uncertain-band sub-protocol)
+- `CHANGELOG.md` ([Unreleased] entry under Added)
+
+### Plan deviations (documented)
+
+1. **`docs/training/README.md` created on this branch** rather than modified — the PR #93 docs scaffolding hasn't merged to dev yet, so the training/ directory was empty on the fork-point. Created a minimal version that mirrors PR #93's intended structure; merges will reconcile via standard merge when one or both PRs land.
+
+### Architectural decisions retained from plan (D1-D6)
+
+- **D1**: skill-side judge (caller LLM), not server-side. Preserves docs/CONCEPT.md anti-goal "Not an LLM-powered ledger".
+- **D2**: caching via existing `compliance_check` writes (Phase 4 added `semantic_status` + `evidence_refs`).
+- **D3-D4**: reuses existing typed contracts (`PreClassificationHint`, `ComplianceVerdict`); no new fields.
+- **D5**: rubric is data (markdown text in SKILL.md §2.bis), not code.
+- **D6**: 5 exit criteria, 4 CI-checkable + 1 operator QC pass (qualitative gate).
+
+### Capability shortfalls (carried across phases)
+
+- `qor/scripts/` runtime helpers absent — gate-chain artifacts not written.
+- `qor/reliability/` enforcement scripts absent — Step 4.6 reliability sweep skipped.
+- `agent-teams` capability not declared — sequential mode.
+- `codex-plugin` capability not declared — solo audit mode.
+- Audit found `pilot/mcp/skills/` referenced by CLAUDE.md but does not exist on dev (SG-PLAN-GROUNDING-DRIFT instance #2 — META_LEDGER #15, SHADOW_GENOME #5). Plan post-remediation correctly drops the reference; followup workstream `docs:claude-md-cleanup` filed separately.
+
+### Test state (post-implementation)
+
+- Targeted sweep: 40/40 (8 new + 32 regression on test_m3_benchmark.py + test_codegenome_drift_classifier.py + test_codegenome_drift_service.py).
+- All test functions ≤ 25 LOC.
+- All test files ≤ 96 LOC.
+- `cases.py` 431 LOC under tests/ ruff exclusion (pyproject.toml `exclude = ["tests", ...]`).
+
+---
 
 ## Phase 4 (#61) implementation — 27 files, ~2515 LOC, 73 new tests, 189/189 regression
 

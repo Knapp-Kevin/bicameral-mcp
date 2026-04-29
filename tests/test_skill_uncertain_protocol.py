@@ -15,10 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_SKILL_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "skills" / "bicameral-sync" / "SKILL.md"
-)
+_SKILL_PATH = Path(__file__).resolve().parent.parent / "skills" / "bicameral-sync" / "SKILL.md"
 _HEADING_PATTERN = re.compile(r"uncertain[- ]band sub-protocol", re.IGNORECASE)
 _AXIS_TERMS = ("semantic_status", "semantically_preserved", "semantic_change")
 _SIGNAL_TERMS = ("signature", "neighbors", "diff_lines", "no_new_calls")
@@ -31,9 +28,7 @@ _AXIS_1_FIRST_PATTERN = re.compile(
 def _read_skill() -> str:
     """Return the full SKILL.md text. Fails the test loudly if the
     file moved or was renamed (catches plan-vs-reality drift)."""
-    assert _SKILL_PATH.exists(), (
-        f"skill file not at expected path: {_SKILL_PATH}"
-    )
+    assert _SKILL_PATH.exists(), f"skill file not at expected path: {_SKILL_PATH}"
     return _SKILL_PATH.read_text(encoding="utf-8")
 
 

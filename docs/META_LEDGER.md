@@ -592,6 +592,75 @@ PASS. Chain to `/qor-implement` per delegation table. Plan declares 2 phases (te
 `SG-PLAN-GROUNDING-DRIFT` instance #2 catalogued in `docs/SHADOW_GENOME.md`. Cross-references PR #93 (instance #1, same root cause: CLAUDE.md asserts a `pilot/mcp/skills/` location that does not exist on dev). Followup: separate `docs:claude-md-cleanup` issue tracked outside this plan.
 
 ---
-*Chain integrity: VALID (15 entries)*
-*Genesis: `29dfd085` → Phase 1+2 Seal: `509b411d` → Phase 3 Seal: `89cac7ff` → Phase 4 Audit v1 (VETO): `231fe5f1` → Phase 4 Audit v2 (PASS): `332c72b2` → Phase 4 Audit v3 (PASS, post-rebase): `21ac210f` → Phase 4 SEAL: `0ebcf69b` → #44 Audit (PASS, post-remediation): `536dd15f`*
-*Next required action: `/qor-implement` for `plan-codegenome-llm-drift-judge.md`*
+
+## Entry #16 — SUBSTANTIATION SEAL: `plan-codegenome-llm-drift-judge.md` (Issue #44)
+
+**Phase**: SUBSTANTIATE / qor-substantiate
+**Date**: 2026-04-29
+**Branch**: `feat/44-llm-drift-judge` (off `BicameralAI/dev` post-Phase-4 seal `200dbd5`)
+**Implementation commit**: `f230331`
+**Risk Grade**: L1 (docs + skill rubric + test data; zero production code paths changed)
+**Change Class**: minor
+
+### Verification gates
+
+| Step | Check | Result | Notes |
+|---|---|---|---|
+| Step 2 | PASS verdict in AUDIT_REPORT.md | ✅ | Entry #15 audit PASS at `536dd15f`. |
+| Step 2.5 | Version validation | ✅ | Source remains v0.13.x; no version bump in this PR per user direction (v0.14.0 release PR is Jin's call). |
+| Step 3 | Reality vs Promise | ✅ | All 4 new files + 3 modified files exist. One documented deviation: `docs/training/README.md` was created (not modified) because PR #93 scaffolding hasn't merged yet — minimal mirror created on this branch. |
+| Step 3.5 | Backlog blockers | ✅ | No new security blockers; pre-existing S1 (SECURITY.md absent) unaffected. |
+| Step 4 | Test audit | ✅ | 48/48 in targeted sweep (8 new + 40 regression on test_m3_benchmark + drift_classifier + drift_service). |
+| Step 4 (artifacts) | console.log / print() in NEW production code | ✅ | Zero new production code added; pre-existing `print()` in handlers/update.py unchanged (CLI JSON output, by design). |
+| Step 4.5 | Skill file integrity | ✅ | `skills/bicameral-sync/SKILL.md` modified — required structure preserved (frontmatter, headings, rules). Section 4 `2.bis` correctly placed between Step 2 and Step 3 ("Report"). |
+| Step 4.6 | Reliability sweep | ⚠️ skip | `qor/reliability/` capability shortfall; intent-lock + skill-admission + gate-skill-matrix scripts absent. |
+| Step 5 | Section 4 razor final | ✅ | All NEW files: test_m3_benchmark_judge_corpus.py 83 LOC, test_skill_uncertain_protocol.py 96 LOC, training docs 198+49 LOC (markdown). MODIFIED: SKILL.md 211 LOC (markdown), cases.py 431 LOC (under tests/ ruff exclusion). All test functions ≤ 25 LOC. Zero new production functions. |
+| Step 6 | SYSTEM_STATE.md sync | ✅ | Updated below; #44 snapshot prepended; Phase 4 inventory preserved. |
+| Step 7 | Merkle seal | ✅ | Computed below. |
+| Step 7.5 | Annotated tag | ⚠️ skip | Per user direction, no version bump in this PR. v0.14.0 tag deferred to Jin's release PR. |
+
+### Architectural decisions sealed
+
+D1 (skill-side judge), D2 (caching free via existing compliance_check), D3-D4 (reuses existing typed contracts), D5 (rubric is markdown text), D6 (5 exit criteria). No design deviations during implementation.
+
+### Operator QC pass (D6 #5)
+
+Recorded as **pending qualitative gate**, NOT a CI-blocker. The operator will run the `bicameral-sync` skill against the 10 uncertain-band cases and compare LLM verdicts to `expected_judge` ground truth in `tests/fixtures/m3_benchmark/cases.py`. Pass threshold: 0% FP on cosmetic-claimed verdicts; ≤ 20% FN. Threshold met / not met to be recorded by the operator post-merge as a separate META_LEDGER addendum or comment on the PR.
+
+### Plan deviations (documented)
+
+1. **`docs/training/README.md` created (not modified)**. PR #93's docs/training/ scaffolding hasn't merged to dev. Minimal training README mirrored on this branch; merges will reconcile. Soft dependency disclosed in PR body.
+
+### Carried-forward observations
+
+- **SG-PLAN-GROUNDING-DRIFT instance #2** (META_LEDGER #15 / SHADOW_GENOME #5): `pilot/mcp/skills/` referenced by CLAUDE.md but does not exist on dev. Plan post-remediation correctly drops the reference. Followup `docs:claude-md-cleanup` workstream filed separately (NOT in scope for #44).
+
+### Capability shortfalls (carried)
+
+- `qor/scripts/` runtime helpers absent — gate-chain artifacts at `.qor/gates/<session>/*.json` not written. File-based META_LEDGER chain remains canonical.
+- `qor/reliability/` enforcement scripts absent — Step 4.6 reliability sweep skipped.
+- `agent-teams` capability not declared on Claude Code host — sequential mode.
+- `codex-plugin` capability not declared — solo audit mode.
+- `AUDIT_REPORT.md` lives at `.agent/staging/` rather than `.failsafe/governance/`. Path divergence noted; chain integrity preserved.
+
+### Session content hash
+
+SHA256 over 8 sorted-path files (plan + skill + training doc + 2 test files + cases.py + training README + SYSTEM_STATE.md) =
+**`a952c0140a142dbd60f9239b4786bc4a498bac98441e157f0b19bc2eb8f4dc1d`**
+
+### Previous chain hash
+
+`536dd15f587d749cb600999171e0889fbe20f39818bf3969890f411ff0fe350b` (Entry #15, audit PASS post-remediation)
+
+### Merkle seal
+
+SHA256(content_hash + previous_hash) = **`567170e0f1dc008cd5663201d8b1582dbabb5904527acb31ed5ea869b1cd8877`**
+
+### Decision
+
+**Reality matches Promise.** Implementation conforms to the audited specification (`d846a4a`) with one documented plan deviation (training README scaffolding). Phase 1 (test corpus extension) and Phase 2 (skill rubric + training doc) sealed in sequence; 8/8 new tests + 40/40 regression green. Chain integrity intact. Next phase: `/qor-document` then open PR `feat/44-llm-drift-judge → BicameralAI/dev`.
+
+---
+*Chain integrity: VALID (16 entries)*
+*Genesis: `29dfd085` → Phase 1+2 Seal: `509b411d` → Phase 3 Seal: `89cac7ff` → Phase 4 Audit v1 (VETO): `231fe5f1` → Phase 4 Audit v2 (PASS): `332c72b2` → Phase 4 Audit v3 (PASS, post-rebase): `21ac210f` → Phase 4 SEAL: `0ebcf69b` → #44 Audit (PASS, post-remediation): `536dd15f` → #44 SEAL: `567170e0`*
+*Next required action: `/qor-document` then open PR to `BicameralAI/dev`*

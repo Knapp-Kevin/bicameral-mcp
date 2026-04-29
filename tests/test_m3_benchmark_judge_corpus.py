@@ -38,13 +38,10 @@ def test_every_uncertain_case_has_expected_judge() -> None:
     uncertain = _uncertain_cases()
     assert uncertain, "M3 corpus has no uncertain cases — plan baseline broken"
     missing = [c["id"] for c in uncertain if "expected_judge" not in c]
-    assert not missing, (
-        f"uncertain cases without expected_judge: {missing}"
-    )
+    assert not missing, f"uncertain cases without expected_judge: {missing}"
     for case in uncertain:
         assert isinstance(case["expected_judge"], dict), (
-            f"{case['id']} expected_judge must be dict, got "
-            f"{type(case['expected_judge']).__name__}"
+            f"{case['id']} expected_judge must be dict, got {type(case['expected_judge']).__name__}"
         )
 
 
@@ -64,8 +61,7 @@ def test_expected_judge_semantic_status_is_valid_enum() -> None:
     for case in _uncertain_cases():
         status = case["expected_judge"].get("semantic_status")
         assert status in _VALID_SEMANTIC_STATUSES, (
-            f"{case['id']} semantic_status={status!r} not in "
-            f"{_VALID_SEMANTIC_STATUSES}"
+            f"{case['id']} semantic_status={status!r} not in {_VALID_SEMANTIC_STATUSES}"
         )
 
 
