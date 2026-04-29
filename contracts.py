@@ -319,6 +319,10 @@ class LinkCommitResponse(BaseModel):
     # ``pending_compliance_checks`` before the response is sent. Zero
     # when ``codegenome.enhance_drift`` is disabled.
     auto_resolved_count: int = 0
+    # #65 — preflight telemetry plumb-through. When the caller passed a
+    # preflight_id (from a prior bicameral.preflight call), the response
+    # echoes it so downstream telemetry rows can be attributed.
+    preflight_id: str | None = None
 
 
 class ActionHint(BaseModel):
@@ -645,6 +649,9 @@ class PreflightResponse(BaseModel):
     context_pending_ready: list[BriefDecision] = []  # context_pending with ≥1 confirmed context_for
     sync_metrics: SyncMetrics | None = None  # V1 A3 — catch-up wall times
     product_stage: str | None = None  # shown once per device; wait-time expectation-setting
+    # #65 — opaque per-call id for the preflight telemetry capture loop.
+    # None when telemetry is disabled (BICAMERAL_PREFLIGHT_TELEMETRY != 1).
+    preflight_id: str | None = None
 
 
 # ── Tool 10: /bicameral_judge_gaps ───────────────────────────────────
@@ -709,6 +716,8 @@ class RatifyResponse(BaseModel):
     was_new: bool  # True if this call set the signoff; False if already set
     signoff: dict
     projected_status: Literal["reflected", "drifted", "pending", "ungrounded"]
+    # #65 — preflight telemetry plumb-through.
+    preflight_id: str | None = None
 
 
 # ── Tool: bicameral.resolve_collision ────────────────────────────────────────
@@ -823,6 +832,8 @@ class BindResponse(BaseModel):
 
     bindings: list[BindResult]
     sync_metrics: SyncMetrics | None = None  # V1 A3 — write-barrier hold time
+    # #65 — preflight telemetry plumb-through.
+    preflight_id: str | None = None
 
 
 # ── Session-start banner ─────────────────────────────────────────────
