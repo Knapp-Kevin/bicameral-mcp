@@ -7,6 +7,17 @@ All notable changes to bicameral-mcp are tracked here. Format loosely follows
 
 ### Added
 
+- **`bicameral-mcp branch-scan` CLI + opt-in pre-push git hook (#48).**
+  New console subcommand prints a terminal summary of drifted decisions
+  for HEAD; calls `link_commit` under the hood. Installed as a git
+  pre-push hook via `bicameral-mcp setup --with-push-hook`. Surfaces
+  drift warnings before `git push` completes, with a `Push anyway? [y/N]`
+  prompt when attached to a TTY. Non-blocking by default;
+  `BICAMERAL_PUSH_HOOK_BLOCK=1` forces hard-block on drift. Idempotent
+  install. Path C: skips silently when no `~/.bicameral/ledger.db`
+  exists. New module `cli/branch_scan.py`; new
+  `_install_git_pre_push_hook` in `setup_wizard.py`; new `--with-push-hook`
+  flag in `bicameral-mcp setup`. Issue #48.
 - **GitHub Action — sticky PR-comment drift report (#49).** New advisory
   workflow `.github/workflows/drift-report.yml` posts a sticky Markdown
   comment on every PR open/synchronize with the drift state computed

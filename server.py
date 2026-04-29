@@ -1307,6 +1307,17 @@ def cli_main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="separate directory for .bicameral/ history storage (default: same as repo)",
     )
+    setup_parser.add_argument(
+        "--with-push-hook",
+        action="store_true",
+        help="also install a git pre-push hook that surfaces drift before push (#48)",
+    )
+
+    # branch-scan subcommand (#48): terminal drift summary used by pre-push hook.
+    subparsers.add_parser(
+        "branch-scan",
+        help="surface bicameral drift for HEAD (used by the pre-push git hook)",
+    )
 
     parser.add_argument(
         "--smoke-test",
@@ -1333,7 +1344,16 @@ def cli_main(argv: list[str] | None = None) -> int:
     if args.command == "setup":
         from setup_wizard import run_setup
 
-        return run_setup(args.repo_path, args.history_path)
+        return run_setup(
+            args.repo_path,
+            args.history_path,
+            with_push_hook=args.with_push_hook,
+        )
+
+    if args.command == "branch-scan":
+        from cli.branch_scan import main as branch_scan_main
+
+        return branch_scan_main([])
 
     if args.smoke_test:
         result = asyncio.run(run_smoke_test())

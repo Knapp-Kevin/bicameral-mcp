@@ -472,6 +472,57 @@ def _install_git_post_commit_hook(repo_path: Path) -> bool:
     return True
 
 
+_GIT_PRE_PUSH_HOOK = """\
+#!/bin/sh
+# Bicameral MCP — pre-push hook (installed by bicameral-mcp setup --with-push-hook, #48)
+# Surfaces drift warnings before git push completes.
+# Skips when no .bicameral/ ledger configured. Non-blocking by default;
+# BICAMERAL_PUSH_HOOK_BLOCK=1 forces hard-block on drift.
+[ -d .bicameral ] || exit 0
+bicameral-mcp branch-scan
+status=$?
+if [ "$status" = "0" ]; then exit 0; fi
+if [ -t 0 ]; then
+    printf "Push anyway? [y/N] " >&2
+    read -r answer </dev/tty
+    case "$answer" in
+        [yY]|[yY][eE][sS]) exit 0 ;;
+        *) exit 1 ;;
+    esac
+fi
+exit "$status"
+"""
+
+
+def _install_git_pre_push_hook(repo_path: Path) -> bool:
+    """Install a git pre-push hook that calls bicameral-mcp branch-scan (#48).
+
+    Opt-in via ``bicameral-mcp setup --with-push-hook``. Idempotent — if
+    a hook already exists and already contains a bicameral call, leaves it
+    untouched. If an existing hook lacks a bicameral call, appends one
+    rather than overwriting.
+
+    Returns True if anything was written.
+    """
+    git_root = _find_git_root(repo_path)
+    if git_root is None:
+        return False
+
+    hook_path = git_root / ".git" / "hooks" / "pre-push"
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if hook_path.exists():
+        existing = hook_path.read_text()
+        if "bicameral" in existing:
+            return False  # already present
+        hook_path.write_text(existing.rstrip("\n") + "\n" + _GIT_PRE_PUSH_HOOK)
+    else:
+        hook_path.write_text(_GIT_PRE_PUSH_HOOK)
+
+    hook_path.chmod(0o755)
+    return True
+
+
 def _install_skills(repo_path: Path) -> int:
     """Copy skill definitions into .claude/skills/ in the target repo."""
     skills_src = Path(__file__).parent / "skills"
@@ -680,8 +731,18 @@ def _ensure_gitignore(
         print(f"  Updated {repo_path}/.gitignore — .bicameral/ fully ignored (history in parent)")
 
 
-def run_setup(repo_hint: str | None = None, history_hint: str | None = None) -> int:
-    """Run the interactive setup wizard."""
+def run_setup(
+    repo_hint: str | None = None,
+    history_hint: str | None = None,
+    *,
+    with_push_hook: bool = False,
+) -> int:
+    """Run the interactive setup wizard.
+
+    ``with_push_hook`` (#48): when True, additionally install a
+    ``.git/hooks/pre-push`` that surfaces drift warnings via
+    ``bicameral-mcp branch-scan`` before push completes. Idempotent.
+    """
     print()
     print("  ┌─────────────────────────────────────────┐")
     print("  │  Bicameral MCP — Setup                   │")
@@ -745,6 +806,13 @@ def run_setup(repo_hint: str | None = None, history_hint: str | None = None) -> 
             )
         else:
             print("  Git: post-commit hook already present — skipped")
+
+    # Step 7b: Git pre-push hook (#48 — opt-in via --with-push-hook flag)
+    if with_push_hook:
+        if _install_git_pre_push_hook(repo_path):
+            print("  Git: installed pre-push hook → bicameral-mcp branch-scan before every push")
+        else:
+            print("  Git: pre-push hook already present — skipped")
 
     # Summary
     agent_names = ", ".join(AGENTS[a]["name"] for a in agents)
