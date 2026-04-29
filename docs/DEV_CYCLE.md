@@ -165,11 +165,95 @@ Smaller PRs may use `Plan: trivial; risk:L1`.
 
 ### 4.5 CI gates
 
-Every PR to `dev` must show green on:
+Two-tier model: a fast set on every PR-to-`dev`, a deeper set on the release
+PR (`dev` → `main`). The asymmetry is deliberate — see §4.5.3.
 
-- `test-mcp-regression` — pytest with `SURREAL_URL=memory://`.
-- `lint` — ruff/black/mypy as configured.
-- `build` — package builds, imports resolve.
+#### 4.5.1 Tier 1 — PR → `dev` (fast, blocks every PR)
+
+The bar is *"this won't break dev for everyone else."* Target wall-clock: under
+5 minutes. Red on any of these blocks merge.
+
+| Gate | Workflow / tool | Why |
+|---|---|---|
+| **Lint** | `ruff` + `black --check` | Catches style drift, dead imports, unused vars before review |
+| **Type check** | `mypy` (or `pyright`) | Type errors surface at runtime via Pydantic boundaries; keep them at PR-time |
+| **Unit + integration tests (Linux)** | `test-mcp-regression.yml` (existing) | Core regression suite |
+| **Unit + integration tests (Windows)** | matrix on `test-mcp-regression.yml` | Three of the last four bugs (#67, #68, #74) were Windows-only — manual verification is not a strategy |
+| **Schema persistence smoke** | `test-schema-persistence.yml` (existing) | Schema bugs are silent killers; cheap to run |
+| **Module import smoke** | `python -c "import server, telemetry, consent, ..."` | Catches missing modules / circular imports in seconds |
+| **Secret scan** | `gitleaks` or `trufflehog`, fail-on-find | API keys, tokens, credentials in code or test fixtures |
+| **`pip check`** | one-liner job | Detects broken dependency tree on the PR's `pip install -e .[test]` |
+| **`merged-to-dev` label automation** | post-merge GitHub Action | Auto-applies the label on merge; resolves the manual labeling problem from the PR-A audit |
+
+#### 4.5.2 Tier 2 — Release PR (`dev` → `main`)
+
+The bar is *"this is releasable to users."* Inherits all Tier 1 gates plus the
+following. Can run 10–20 minutes; runs less often (one release PR at a time).
+
+| Gate | Workflow / tool | Why |
+|---|---|---|
+| **All Tier 1 gates** | — | Inherits dev's bar |
+| **Full regression including slow markers** | `pytest -m "not bench"` | Tier 1 may exclude `alpha_flow`, `desync_scenarios`; the release run includes them |
+| **Preflight eval — blocking** | `preflight-eval.yml` (currently advisory) | Currently advisory on every PR; should block release if drift precision regresses |
+| **Schema migration validation against persistent DB with seed data** | bespoke job | Beyond the smoke — apply migration on a `v_(N-1)` seed, assert no row loss + roundtrip works |
+| **Performance regression** | bespoke job | Drift detection p50, ingest throughput, search latency. Fail if > 15% regression vs `main`'s last successful run |
+| **Security scan** | `bandit`, `pip-audit`, GitHub Dependency Review | Required before any user touches the binary |
+| **CHANGELOG enforcement** | bespoke job | Reject release PR if `CHANGELOG.md` does not move `## Unreleased` content under a new `## [vX.Y.Z]` block |
+| **Version monotonicity** | bespoke job | Version in `pyproject.toml` must be `>` current `main` tag |
+| **MCP protocol live smoke** | bespoke job | Spawn server, call each tool over stdio, assert response shape. Catches handler-registration / Pydantic-boundary issues unit tests miss |
+| **Issue auto-close on merge** | post-merge action | `Closes #N` fires on merge into the PR's base; on release PR merge to `main`, also strip the `merged-to-dev` label from issues whose fix is now shipped |
+
+#### 4.5.3 Why the split
+
+The asymmetry isn't arbitrary — it's about **failure cost vs velocity**:
+
+| Concern | dev gate | main gate |
+|---|---|---|
+| Style / type errors | Block dev (cheap to fix at PR time) | Inherited |
+| Windows breakage | Block dev (recent bug history mandates) | Inherited |
+| Eval regression | Advisory on dev (don't slow feature work for noise) | **Block main** (release quality) |
+| Performance regression | Don't run (too slow per PR) | **Block main** |
+| CHANGELOG / version | Don't enforce (dev work is in-flight) | **Block main** |
+| Security scan | Don't run per PR (slow, noisy) | **Block main** |
+| MCP protocol live smoke | Don't run (requires server boot) | **Block main** |
+
+#### 4.5.4 Implementation phases (current state vs target)
+
+A dev-cycle gate is only as strong as its branch-protection rule. Adding the
+workflow file is half the job; the other half is requiring it via the GitHub
+"Require status checks to pass before merging" setting on `dev` and `main`.
+
+**Phase 1 — biggest impact, low risk** (open as one chore PR):
+
+1. Add Windows test job to `test-mcp-regression.yml` matrix
+   (`runs-on: [ubuntu-latest, windows-latest]`).
+2. Add `lint-and-typecheck.yml` (ruff + mypy) running on all PRs.
+3. Add `secret-scan.yml` (gitleaks) on all PRs.
+4. Add the `merged-to-dev` auto-labeller as a post-merge action on `dev`.
+5. Update `dev` branch-protection to require: lint, typecheck, regression
+   (Linux + Windows), schema persistence, secret scan.
+
+**Phase 2 — release-quality gates**:
+
+6. Convert `preflight-eval.yml` from advisory to blocking on `main`-bound PRs
+   only (use `if: github.base_ref == 'main'`).
+7. New `release-gates.yml` running only on `main`-bound PRs: CHANGELOG diff,
+   version monotonicity, MCP live smoke.
+8. Add `bandit` + `pip-audit` to `release-gates`.
+9. Performance baseline harness — capture drift detection p50 and search
+   latency; compare against `main`'s last successful run.
+10. Update `main` branch-protection to require all Tier 1 + Tier 2 checks.
+
+**Phase 3 — nice to have**:
+
+11. Auto-close `merged-to-dev` issues when `dev` → `main` forward-merges.
+12. Sticky PR-comment bot for preflight-eval results (covered by issue #49).
+
+Until Phase 1 ships, the documented Tier 1 list is **aspirational** — only
+`test-mcp-regression`, `test-schema-persistence`, and `preflight-eval`
+(advisory) actually run today. Reviewers should treat the rest as their own
+responsibility (run lint locally, verify on Windows, etc.) until the gates
+land.
 
 Red CI blocks merge. Don't ask reviewers to look at red PRs.
 
@@ -276,21 +360,31 @@ None. (or: list each.)
 
 ### 6.4 Pre-release checklist
 
-Jin runs through this before merging the release PR:
+Jin runs through this before merging the release PR. Items marked **CI** are
+enforced by the Tier 2 gates in §4.5.2 once Phase 2 lands; until then they are
+manual.
 
 - [ ] **CHANGELOG flip** — move `## Unreleased` content under `## [v0.13.0] - 2026-04-29`.
-      Add a fresh empty `## Unreleased` block at the top.
+      Add a fresh empty `## Unreleased` block at the top. **(CI: CHANGELOG enforcement)**
 - [ ] **Version bump** — update `pyproject.toml` / `__init__.py` / wherever the
-      canonical version lives.
+      canonical version lives. **(CI: version monotonicity)**
 - [ ] **`SCHEMA_COMPATIBILITY` map** — confirm the new schema version maps to the
-      new release version (e.g. `14: "0.13.0"`).
+      new release version (e.g. `14: "0.13.0"`). **(CI: schema migration validation)**
 - [ ] **Skill files** — every changed skill is committed in `pilot/mcp/skills/`,
       not just in `.claude/skills/`.
 - [ ] **Help / training docs** (see §8) — published for any feature on the
       "user-touching" list.
 - [ ] **Demo readiness** — at least one demo script (§11) covers each headline
       feature.
-- [ ] **CI on `dev` HEAD** — green for ≥ 24 h.
+- [ ] **CI on `dev` HEAD** — green for ≥ 24 h. **(CI: full regression incl. slow markers)**
+- [ ] **Preflight eval** — blocking gate, no regression vs `main`'s baseline.
+      **(CI: preflight-eval blocking on `main`-bound)**
+- [ ] **Performance** — drift detection p50, ingest throughput, search latency
+      within ±15 % of `main`'s last successful run. **(CI: performance regression)**
+- [ ] **Security scan** — `bandit` + `pip-audit` + GitHub Dependency Review
+      clean. **(CI: security scan)**
+- [ ] **MCP protocol live smoke** — server boots, every registered tool returns
+      a shape-conformant response over stdio. **(CI: MCP protocol live smoke)**
 - [ ] **Milestone** — every issue under it is closed.
 
 ### 6.5 Merging the release PR
