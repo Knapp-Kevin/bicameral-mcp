@@ -229,3 +229,55 @@ codebase before issuing PASS. The grounding sweep is non-optional
 for L2 plans that touch schema or extend an existing module API.
 
 ---
+
+## Failure Entry #5
+
+**Date**: 2026-04-29
+**Phase**: GATE / qor-audit (v1 of #44 plan, commit `b15c9ef`)
+**Pattern**: SG-PLAN-GROUNDING-DRIFT (instance #2 in this session)
+
+### What happened
+
+Plan `plan-codegenome-llm-drift-judge.md` (v1) instructed the implementer to modify `pilot/mcp/skills/bicameral-sync/SKILL.md` and added a unit test (`test_pilot_skill_md_matches_skills_skill_md`) that diffed two copies of SKILL.md across `skills/` and `pilot/mcp/skills/`. The plan author (this session) inherited the claim from `CLAUDE.md` ("`pilot/mcp/skills/` is the **single canonical location**") without empirically verifying it.
+
+Reality on `dev` HEAD (`200dbd5`):
+
+```
+$ ls pilot/
+ls: cannot access 'pilot/': No such file or directory
+```
+
+The directory does not exist. The plan was unimplementable as written.
+
+### Detection
+
+Audit Step 3 — orphan detection pass — flagged `pilot/mcp/skills/bicameral-sync/SKILL.md` as a build-path orphan. Backwalking to the plan revealed it was a directive, not a typo; a literal `ls` confirmed the directory's absence.
+
+### Mitigation
+
+1. v2 of the plan (commit `d846a4a`) removed the directive, removed the matching test, and added a rationale note identifying CLAUDE.md's reference as stale.
+2. Plan author should `ls` every directory it proposes to modify before issuing the plan, not trust `CLAUDE.md` verbatim for filesystem layout.
+3. Auditor's orphan detection should run on every plan, not just code-bearing ones.
+
+### Cross-references
+
+- **Instance #1**: `DEV_CYCLE.md` §9 (PR #93) absorbed the same `pilot/mcp/skills/` reference into a "skill file rule (project-specific, mandatory)" callout. Same root cause; landed undetected because PR #93 was a docs PR with no orphan check.
+- **Followup workstream**: `docs:claude-md-cleanup` issue (to be filed) — fixes `CLAUDE.md` itself so future plans don't keep inheriting the stale assertion.
+
+### Pattern signature
+
+```
+SG-PLAN-GROUNDING-DRIFT
+  Trigger:        plan author trusts a documented assertion about
+                  filesystem state without empirical verification.
+  Failure mode:   plan instructs work on files that don't exist;
+                  unit test references nonexistent path; orphan
+                  detection catches it at audit (best case) or
+                  implementation runtime (worst case).
+  Countermeasure: every directory cited in a plan's "affected
+                  files" section must be `ls`-confirmed before
+                  the plan is submitted for audit. Add a Step 2b
+                  Grounding Protocol clause if not already present.
+```
+
+---

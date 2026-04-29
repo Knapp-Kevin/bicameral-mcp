@@ -550,6 +550,48 @@ SHA256(content_hash + previous_hash) = **`0ebcf69bf25e11d9d85cb9856ccc9757ad39b7
 Reality matches Promise. Phase 4 (#61) implementation conforms to the v3-audited specification with two documented plan deviations (schema renumbering and §Phase 5 fixture collapse). All 5 phases sealed in sequence; M3 benchmark exit criterion (false-positive rate < 5%) met with 0 false positives. Chain integrity intact. Next phase: `/qor-document` then open PR `claude/codegenome-phase-4-qor → BicameralAI/dev`.
 
 ---
-*Chain integrity: VALID (14 entries)*
-*Genesis: `29dfd085` → Phase 1+2 Seal: `509b411d` → Phase 3 Seal: `89cac7ff` → Phase 4 Audit v1 (VETO): `231fe5f1` → Phase 4 Audit v2 (PASS): `332c72b2` → Phase 4 Audit v3 (PASS, post-rebase): `21ac210f` → Phase 4 SEAL: `0ebcf69b`*
-*Next required action: `/qor-document` then open PR to `BicameralAI/dev`*
+
+## Entry #15 — GATE TRIBUNAL: `plan-codegenome-llm-drift-judge.md` (Issue #44)
+
+**Phase**: GATE / qor-audit
+**Date**: 2026-04-29
+**Branch**: `feat/44-llm-drift-judge` (off `BicameralAI/dev` post-Phase-4 seal)
+**Subject**: Issue #44 — *[P2] LLM semantic drift judge: suppress false-positive drift flags on cosmetic code changes*
+**Risk Grade**: L1 (docs + skill rubric + test data; zero production code paths)
+**Change Class**: minor
+
+### Audit history (this entry covers both iterations)
+
+| v | Plan commit | Verdict | Findings |
+|---|---|---|---|
+| v1 | `b15c9ef` | **VETO** | F-1 (BLOCKING): `pilot/mcp/skills/bicameral-sync/SKILL.md` does not exist on dev — plan inherited stale `CLAUDE.md` claim without filesystem verification. SG-PLAN-GROUNDING-DRIFT instance #2. F-2/F-3: minor grounding numerics. F-4/F-5: non-blocking. |
+| v2 | `d846a4a` | **PASS** | All blocking findings remediated. Pilot path directive removed; test count 5→4; SKILL.md baseline 138→150; ruff exemption claim corrected. |
+
+### Plan content hash (v2)
+
+`sha256:7094b9b64339e1bf2d96055fac1bd46dec066966fbf690687c129d02fb5ae74d`
+
+### Audit report content hash
+
+`sha256:bc74936e79eff03bdae0dda2d7ab419044328978814643b99ecfa5ee8fa2b6a1`
+
+### Previous chain hash
+
+`0ebcf69bf25e11d9d85cb9856ccc9757ad39b75c2f352bdd063bd2d957f506cf` (Entry #14, Phase 4 SEAL)
+
+### Chain hash
+
+`SHA256(plan_hash + audit_hash + prev_hash) =` **`536dd15f587d749cb600999171e0889fbe20f39818bf3969890f411ff0fe350b`**
+
+### Decision
+
+PASS. Chain to `/qor-implement` per delegation table. Plan declares 2 phases (test corpus + skill rubric), 0 production code changes, 0 schema migrations, 0 new dependencies.
+
+### Shadow Genome instance recorded
+
+`SG-PLAN-GROUNDING-DRIFT` instance #2 catalogued in `docs/SHADOW_GENOME.md`. Cross-references PR #93 (instance #1, same root cause: CLAUDE.md asserts a `pilot/mcp/skills/` location that does not exist on dev). Followup: separate `docs:claude-md-cleanup` issue tracked outside this plan.
+
+---
+*Chain integrity: VALID (15 entries)*
+*Genesis: `29dfd085` → Phase 1+2 Seal: `509b411d` → Phase 3 Seal: `89cac7ff` → Phase 4 Audit v1 (VETO): `231fe5f1` → Phase 4 Audit v2 (PASS): `332c72b2` → Phase 4 Audit v3 (PASS, post-rebase): `21ac210f` → Phase 4 SEAL: `0ebcf69b` → #44 Audit (PASS, post-remediation): `536dd15f`*
+*Next required action: `/qor-implement` for `plan-codegenome-llm-drift-judge.md`*
