@@ -31,6 +31,7 @@ import subprocess
 import uuid
 
 from contracts import LinkCommitResponse, PendingComplianceCheck
+from preflight_telemetry import telemetry_enabled, write_engagement
 
 
 def _is_ephemeral_commit(commit_hash: str, repo_path: str, authoritative_ref: str = "") -> bool:
@@ -440,7 +441,12 @@ async def _run_continuity_pass(ctx, pending: list[PendingComplianceCheck]) -> li
     return resolutions
 
 
-async def handle_link_commit(ctx, commit_hash: str = "HEAD") -> LinkCommitResponse:
+async def handle_link_commit(
+    ctx,
+    commit_hash: str = "HEAD",
+    *,
+    preflight_id: str | None = None,
+) -> LinkCommitResponse:
     # v0.4.8: short-circuit if we've already synced this SHA within this
     # MCP call. Returns the FULL cached response from the first sync so
     # downstream consumers (search/drift's ``sync_status``) see real
@@ -451,6 +457,18 @@ async def handle_link_commit(ctx, commit_hash: str = "HEAD") -> LinkCommitRespon
             "[link_commit] sync dedup: %s already synced in this call",
             commit_hash,
         )
+        # Echo preflight_id into the cached response so the engagement row
+        # (and downstream consumers) sees the caller-supplied id.
+        if preflight_id is not None:
+            cached = cached.model_copy(update={"preflight_id": preflight_id})
+        if telemetry_enabled():
+            write_engagement(
+                session_id=str(getattr(ctx, "session_id", "unknown") or "unknown"),
+                tool="bicameral.link_commit",
+                decision_id=None,
+                preflight_id=preflight_id,
+                file_paths=None,
+            )
         return cached
 
     # Self-heal legacy regions with empty content_hash from pre-v0.4.5
@@ -549,8 +567,18 @@ async def handle_link_commit(ctx, commit_hash: str = "HEAD") -> LinkCommitRespon
         ephemeral=is_ephemeral,
         continuity_resolutions=continuity_resolutions,
         auto_resolved_count=auto_resolved_count,
+        preflight_id=preflight_id,
     )
     _store_sync_cache(ctx, commit_hash, response)
+
+    if telemetry_enabled():
+        write_engagement(
+            session_id=str(getattr(ctx, "session_id", "unknown") or "unknown"),
+            tool="bicameral.link_commit",
+            decision_id=None,
+            preflight_id=preflight_id,
+            file_paths=None,
+        )
 
     try:
         from dashboard.server import notify_dashboard

@@ -6,11 +6,17 @@ import logging
 
 from contracts import BindResponse, BindResult, PendingComplianceCheck, SyncMetrics
 from handlers.sync_middleware import repo_write_barrier
+from preflight_telemetry import telemetry_enabled, write_engagement
 
 logger = logging.getLogger(__name__)
 
 
-async def handle_bind(ctx, bindings: list[dict]) -> BindResponse:
+async def handle_bind(
+    ctx,
+    bindings: list[dict],
+    *,
+    preflight_id: str | None = None,
+) -> BindResponse:
     """Create decision→code_region bindings from caller-LLM-supplied locations.
 
     For each binding:
@@ -32,6 +38,22 @@ async def handle_bind(ctx, bindings: list[dict]) -> BindResponse:
     async with repo_write_barrier(ctx) as timing:
         response = await _do_bind(ctx, bindings)
     response.sync_metrics = SyncMetrics(barrier_held_ms=timing.held_ms)
+    response.preflight_id = preflight_id
+
+    if telemetry_enabled():
+        # One row per bind call (not per binding) — the call is the unit of
+        # engagement. decision_id is the first binding's id when present;
+        # file_paths is the union of file paths across the call.
+        first_decision = (str(bindings[0].get("decision_id") or "") if bindings else None) or None
+        file_paths = [str(b.get("file_path") or "") for b in (bindings or []) if b.get("file_path")]
+        write_engagement(
+            session_id=str(getattr(ctx, "session_id", "unknown") or "unknown"),
+            tool="bicameral.bind",
+            decision_id=first_decision,
+            preflight_id=preflight_id,
+            file_paths=file_paths or None,
+        )
+
     return response
 
 

@@ -210,8 +210,34 @@ def _reinstall_skills(repo_path: str) -> int:
         return 0
 
 
-async def handle_update(action: str, current_version: str, repo_path: str = "") -> dict:
-    """Handle bicameral.update tool calls."""
+async def handle_update(
+    action: str,
+    current_version: str,
+    repo_path: str = "",
+    *,
+    preflight_id: str | None = None,
+) -> dict:
+    """Handle bicameral.update tool calls.
+
+    The keyword-only ``preflight_id`` is plumbed onto every return dict for
+    parity with the pydantic-model handlers (#65). This is intentionally a
+    smaller blast radius than refactoring update.py to a pydantic response.
+    """
+    # Best-effort engagement telemetry — emit once at entry.
+    try:
+        from preflight_telemetry import telemetry_enabled, write_engagement
+
+        if telemetry_enabled():
+            write_engagement(
+                session_id="unknown",  # update.py is not session-scoped
+                tool="bicameral.update",
+                decision_id=None,
+                preflight_id=preflight_id,
+                file_paths=None,
+            )
+    except Exception:
+        pass
+
     if action == "check":
         recommended = _fetch_recommended_version()
         if not recommended:
@@ -219,29 +245,37 @@ async def handle_update(action: str, current_version: str, repo_path: str = "") 
                 "status": "unknown",
                 "current_version": current_version,
                 "message": "Could not reach version endpoint.",
+                "preflight_id": preflight_id,
             }
         if _parse_version(recommended) <= _parse_version(current_version):
             return {
                 "status": "up_to_date",
                 "current_version": current_version,
                 "recommended_version": recommended,
+                "preflight_id": preflight_id,
             }
         return {
             "status": "update_available",
             "current_version": current_version,
             "recommended_version": recommended,
+            "preflight_id": preflight_id,
         }
 
     if action == "apply":
         recommended = _fetch_recommended_version()
         if not recommended:
-            return {"status": "error", "message": "Could not determine recommended version."}
+            return {
+                "status": "error",
+                "message": "Could not determine recommended version.",
+                "preflight_id": preflight_id,
+            }
 
         if _parse_version(recommended) <= _parse_version(current_version):
             return {
                 "status": "already_up_to_date",
                 "current_version": current_version,
                 "recommended_version": recommended,
+                "preflight_id": preflight_id,
             }
 
         target = f"bicameral-mcp=={recommended}"
@@ -295,6 +329,7 @@ async def handle_update(action: str, current_version: str, repo_path: str = "") 
                             f"Upgraded to v{recommended}.{skills_note}{replay_note}"
                             f" Restart the MCP server to use the new version."
                         ),
+                        "preflight_id": preflight_id,
                     }
 
                 migration_error = migration_result.get("error")
@@ -314,15 +349,29 @@ async def handle_update(action: str, current_version: str, repo_path: str = "") 
                         f"Upgraded to v{recommended}.{skills_note} "
                         f"Restart the MCP server to use the new version.{migration_warning}"
                     ),
+                    "preflight_id": preflight_id,
                 }
             else:
                 return {
                     "status": "error",
                     "message": f"pip install failed: {result.stderr.strip()}",
+                    "preflight_id": preflight_id,
                 }
         except subprocess.TimeoutExpired:
-            return {"status": "error", "message": "pip install timed out after 120s."}
+            return {
+                "status": "error",
+                "message": "pip install timed out after 120s.",
+                "preflight_id": preflight_id,
+            }
         except Exception as exc:
-            return {"status": "error", "message": str(exc)}
+            return {
+                "status": "error",
+                "message": str(exc),
+                "preflight_id": preflight_id,
+            }
 
-    return {"status": "error", "message": f"Unknown action '{action}'. Use 'check' or 'apply'."}
+    return {
+        "status": "error",
+        "message": f"Unknown action '{action}'. Use 'check' or 'apply'.",
+        "preflight_id": preflight_id,
+    }

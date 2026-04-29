@@ -131,6 +131,15 @@ async def list_tools() -> list[Tool]:
                         "default": "HEAD",
                         "description": "Git commit hash or ref to sync (default: HEAD)",
                     },
+                    "preflight_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional opaque id from a prior bicameral.preflight call. "
+                            "When supplied, the local preflight-telemetry capture loop "
+                            "(#65, opt-in via BICAMERAL_PREFLIGHT_TELEMETRY=1) attributes "
+                            "this engagement to that preflight."
+                        ),
+                    },
                 },
             },
         ),
@@ -220,6 +229,12 @@ async def list_tools() -> list[Tool]:
                             "required": ["decision_id", "file_path", "symbol_name"],
                         },
                     },
+                    "preflight_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional opaque id from a prior bicameral.preflight call (#65)."
+                        ),
+                    },
                 },
                 "required": ["bindings"],
             },
@@ -238,6 +253,12 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "enum": ["check", "apply"],
                         "description": "'check' to see if an update is available, 'apply' to install it",
+                    },
+                    "preflight_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional opaque id from a prior bicameral.preflight call (#65)."
+                        ),
                     },
                 },
                 "required": ["action"],
@@ -329,6 +350,14 @@ async def list_tools() -> list[Tool]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional list of teammates the user mentioned — used by the chained brief call",
+                    },
+                    "preflight_id": {
+                        "type": "string",
+                        "description": (
+                            "Reserved for future symmetry; bicameral.preflight currently "
+                            "generates the preflight_id itself when telemetry is enabled "
+                            "(#65)."
+                        ),
                     },
                 },
                 "required": ["topic"],
@@ -488,6 +517,12 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "default": "",
                         "description": "Optional rationale or context for the sign-off (for audit)",
+                    },
+                    "preflight_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional opaque id from a prior bicameral.preflight call (#65)."
+                        ),
                     },
                 },
                 "required": ["decision_id", "signer"],
@@ -900,6 +935,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "bicameral.usage_summary":
         from handlers.usage_summary import handle_usage_summary
+
         data = await handle_usage_summary(ctx, days=int(arguments.get("days", 7)))
         return [TextContent(type="text", text=json.dumps(data, indent=2))]
 
@@ -917,6 +953,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await handle_link_commit(
                 ctx,
                 commit_hash=arguments.get("commit_hash", "HEAD"),
+                preflight_id=arguments.get("preflight_id"),
             )
         elif name in ("bicameral.ingest", "ingest"):
             result = await handle_ingest(
@@ -930,6 +967,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 action=arguments["action"],
                 current_version=SERVER_VERSION,
                 repo_path=str(ctx.repo_path),
+                preflight_id=arguments.get("preflight_id"),
             )
             return [TextContent(type="text", text=json.dumps(data, indent=2))]
         elif name in ("bicameral.reset", "reset"):
@@ -976,6 +1014,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 signer=arguments["signer"],
                 note=arguments.get("note", ""),
                 action=arguments.get("action", "ratify"),
+                preflight_id=arguments.get("preflight_id"),
             )
         elif name in ("bicameral.resolve_collision", "resolve_collision"):
             result = await handle_resolve_collision(
@@ -991,6 +1030,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await handle_bind(
                 ctx,
                 bindings=arguments.get("bindings", []),
+                preflight_id=arguments.get("preflight_id"),
             )
         elif name in ("bicameral.history", "history"):
             result = await handle_history(
@@ -1146,6 +1186,7 @@ async def serve_stdio() -> None:
     # below once the session is live.
     try:
         from consent import notify_if_first_run
+
         notify_if_first_run()
     except Exception:
         pass

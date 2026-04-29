@@ -3,6 +3,81 @@
 All notable changes to bicameral-mcp are tracked here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.15.0 — Preflight telemetry capture loop (pieces 1–4) — built via [QorLogic SDLC](https://github.com/MythologIQ-Labs-LLC/qor-logic)
+
+First slice of the failure-mode triage workflow from #65. Adds a local-only,
+**default-off** capture loop that records bicameral.preflight events plus
+downstream tool engagement, attributable per-call via a new ``preflight_id``.
+The data is for self-triage of false fires / silent misses; it never leaves
+the user's machine and is not part of the existing PostHog relay path.
+
+### Added
+
+- **New module: `preflight_telemetry.py`** (top-level, sibling of
+  `telemetry.py` — they are independent capture systems). Provides:
+  - `_get_or_create_salt()` — per-install salt at `~/.bicameral/salt`,
+    `os.urandom(32)`, mode `0o600` on POSIX. Race-safe init: `os.O_EXCL`
+    create with a `FileExistsError` fallback that reads the winner's
+    bytes (audit MF1 inline fix).
+  - `hash_topic(topic)` and `hash_file_paths(paths)` — salted SHA-256
+    truncated to 16 hex chars (~64 bits). `hash_file_paths` is
+    order-independent so `["a.py","b.py"]` and `["b.py","a.py"]` collide
+    by design.
+  - `new_preflight_id()` — fresh UUIDv4.
+  - `write_preflight_event(...)` — JSONL append at
+    `~/.bicameral/preflight_events.jsonl`, mode `0o600`.
+  - `write_engagement(...)` — JSONL append at
+    `~/.bicameral/engagements.jsonl`, mode `0o600`. Falls back to
+    subset-match attribution against recent preflight events when no
+    explicit `preflight_id` is supplied.
+  - `_maybe_rotate(path)` — rotates at 50 MB or 30 days, keeps the most
+    recent 5 rotations. Uses `os.replace` (atomic on Windows + POSIX).
+- **`preflight_id` plumb-through** — new optional `str | None` field on
+  `PreflightResponse`, `LinkCommitResponse`, `BindResponse`, and
+  `RatifyResponse`. The `update.py` handler returns dicts and now adds a
+  `preflight_id` key to every return shape (audit S3 — 11 sites). Each
+  affected handler (`handle_link_commit`, `handle_bind`, `handle_ratify`,
+  `handle_update`) gains a keyword-only `preflight_id: str | None = None`
+  parameter.
+- **MCP tool inputSchema** — `preflight_id` (optional string) added to
+  `bicameral.preflight`, `bicameral.link_commit`, `bicameral.bind`,
+  `bicameral.update`, `bicameral.ratify`. Existing skills that don't pass
+  it keep working unchanged.
+- **Tests** — `tests/test_preflight_telemetry.py` (19 cases covering
+  salt, hash, writers, rotation, race-loser MF1) and
+  `tests/test_preflight_id_plumbing.py` (9 cases covering the response
+  field on each affected handler).
+
+### Privacy stance
+
+- **Opt-in.** Default is OFF. Set `BICAMERAL_PREFLIGHT_TELEMETRY=1` to
+  capture; unsetting it makes every writer a no-op.
+- **Hashed by default.** Topic and file_paths are stored as 16-char
+  salted SHA-256 prefixes. Set `BICAMERAL_PREFLIGHT_TELEMETRY_RAW=1` to
+  additionally store plaintext — separate, explicit opt-in.
+- **`surfaced_ids` are written raw.** They are opaque ledger
+  `decision_id` strings, already non-PII. Hashing them would defeat the
+  triage join with `failure_review.jsonl` (the only useful join).
+  Documented as an invariant in the module docstring.
+- **Local-only.** All files live under `~/.bicameral/`, mode `0o600`.
+  Data never leaves the machine; this is a separate path from the
+  PostHog relay in `telemetry.py`.
+- **Bounded retention.** 50 MB rolling cap per file; 30-day mtime
+  ceiling; keep last 5 rotations.
+
+### Out of scope (deferred to follow-up plans)
+
+- **Piece 5 — SessionEnd reconciliation skill** (#65-pt2). Reads the
+  JSONL files, classifies entries as `suspected_miss` /
+  `suspected_false_fire` / `normal`, writes `failure_review.jsonl`.
+- **Piece 6 — Triage CLI + redaction** (#65-pt3). `bicameral-mcp triage`
+  CLI for labeling failure rows; promotion to
+  `tests/eval/real_dataset.jsonl` requires explicit redaction.
+
+### Closes
+
+#65 (pieces 1–4 only — pieces 5–6 tracked separately)
+
 ## v0.14.0 — Local-only telemetry counters + usage summary + first-boot consent — built via [QorLogic SDLC](https://github.com/MythologIQ-Labs-LLC/qor-logic)
 
 Privacy-first observability foundation. Adds a local-only counter sink

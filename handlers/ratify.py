@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 from contracts import RatifyResponse
 from ledger.queries import decision_exists, project_decision_status, update_decision_status
+from preflight_telemetry import telemetry_enabled, write_engagement
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ async def handle_ratify(
     signer: str,
     note: str = "",
     action: str = "ratify",
+    *,
+    preflight_id: str | None = None,
 ) -> RatifyResponse:
     """Set signoff on a decision.
 
@@ -65,11 +68,20 @@ async def handle_ratify(
         and existing_signoff.get("state") == target_state
     ):
         projected = await project_decision_status(client, decision_id)
+        if telemetry_enabled():
+            write_engagement(
+                session_id=str(getattr(ctx, "session_id", "unknown") or "unknown"),
+                tool="bicameral.ratify",
+                decision_id=decision_id,
+                preflight_id=preflight_id,
+                file_paths=None,
+            )
         return RatifyResponse(
             decision_id=decision_id,
             was_new=False,
             signoff=existing_signoff,
             projected_status=projected,
+            preflight_id=preflight_id,
         )
 
     head_ref = getattr(ctx, "authoritative_sha", "") or ""
@@ -111,9 +123,19 @@ async def handle_ratify(
         projected,
     )
 
+    if telemetry_enabled():
+        write_engagement(
+            session_id=str(getattr(ctx, "session_id", "unknown") or "unknown"),
+            tool="bicameral.ratify",
+            decision_id=decision_id,
+            preflight_id=preflight_id,
+            file_paths=None,
+        )
+
     return RatifyResponse(
         decision_id=decision_id,
         was_new=True,
         signoff=signoff,
         projected_status=projected,
+        preflight_id=preflight_id,
     )
