@@ -101,6 +101,18 @@ class BarrierTiming:
         self.held_ms: float | None = None
 
 
+def invalidate_process_cache() -> None:
+    """Reset the process-level HEAD cache so the next ``ensure_ledger_synced``
+    call runs a full sync even if HEAD hasn't moved.
+
+    Called from ``invalidate_sync_cache`` (link_commit.py) after any mutation
+    (ingest, update, reset) so that newly-added pending decisions are surfaced
+    on the next automatic sync rather than being silently skipped.
+    """
+    global _LAST_SYNCED_SHA
+    _LAST_SYNCED_SHA = None
+
+
 def _reset_repo_locks_for_tests() -> None:
     """Drop all registered repo locks. Test-only helper.
 
