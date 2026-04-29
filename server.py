@@ -40,6 +40,7 @@ from mcp.types import TextContent, Tool
 from context import BicameralContext
 from dashboard.server import get_dashboard_server
 from handlers.bind import handle_bind
+from handlers.evaluate_governance import handle_evaluate_governance
 from handlers.gap_judge import handle_judge_gaps
 from handlers.history import handle_history
 from handlers.ingest import handle_ingest
@@ -107,6 +108,7 @@ EXPECTED_TOOL_NAMES = [
     "bicameral.usage_summary",
     "bicameral.list_unclassified_decisions",
     "bicameral.set_decision_level",
+    "bicameral.evaluate_governance",
     "validate_symbols",
     "get_neighbors",
     "extract_symbols",
@@ -826,6 +828,35 @@ async def list_tools() -> list[Tool]:
                 "required": ["decision_id", "level"],
             },
         ),
+        # ── Governance evaluation (#108-#110) ────────────────────────
+        Tool(
+            name="bicameral.evaluate_governance",
+            description=(
+                "Evaluate the deterministic escalation policy for a "
+                "single (decision, region) pair. Returns the policy "
+                "result without side effects. Use this to ask 'if "
+                "drift were detected here, what would Bicameral do?' "
+                "Read-only; engine is non-blocking by design."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "decision_id": {
+                        "type": "string",
+                        "description": "Decision record id (e.g. 'decision:abc123').",
+                    },
+                    "region_id": {
+                        "type": "string",
+                        "description": "Optional code_region record id; omit for decision-level evaluation.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Origin label for the synthetic finding (informational).",
+                    },
+                },
+                "required": ["decision_id"],
+            },
+        ),
         # ── Code locator tools (MCP-native) ──────────────────────────
         Tool(
             name="validate_symbols",
@@ -1121,6 +1152,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 decision_id=arguments["decision_id"],
                 level=arguments["level"],
                 rationale=arguments.get("rationale"),
+            )
+        elif name in ("bicameral.evaluate_governance", "evaluate_governance"):
+            result = await handle_evaluate_governance(
+                ctx,
+                decision_id=arguments["decision_id"],
+                region_id=arguments.get("region_id"),
+                source=arguments.get("source", "manual"),
             )
         elif name in ("bicameral.dashboard", "dashboard"):
             from contracts import DashboardResponse
