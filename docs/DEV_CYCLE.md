@@ -54,11 +54,13 @@ every box in that diagram. No back-doors to `main`.
 ### 2.1 Creating
 
 - **Title**: imperative, scoped. `feat(codegenome): semantic drift evaluation in resolve_compliance`,
-  not "add drift evaluation".
-- **Required labels** (apply at least one of each axis):
-  - **Type**: `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `security`.
-  - **Surface**: `tool`, `skill`, `ledger`, `code-locator`, `codegenome`, `infra`, `docs-only`.
-  - **Risk**: `risk:L1` (cosmetic), `risk:L2` (logic), `risk:L3` (security/auth/persistence).
+  not "add drift evaluation". **Do not** prefix with `[P0]`/`[P1]`/`[P2]` — use
+  the priority labels in §2.1.1 instead.
+- **Required labels** (apply at least one of each mandatory axis):
+  - **Type** (mandatory): `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `security`.
+  - **Surface** (mandatory): `tool`, `skill`, `ledger`, `code-locator`, `codegenome`, `infra`, `docs-only`.
+  - **Priority** (mandatory after triage): see §2.1.1 below.
+  - **State** (optional): see §2.1.2 below.
 - **Milestone**: attach to the next-up release (`v0.14.0`). If you don't know
   which release it lands in, attach to `vNext-triage` and let Jin re-assign.
 - **Body template** (see `.github/ISSUE_TEMPLATE/`):
@@ -67,6 +69,51 @@ every box in that diagram. No back-doors to `main`.
   - **Out of scope**: explicit exclusions. Stops scope creep at PR-review time.
   - **Acceptance**: bullet list of testable conditions. CI green is implied; add
     behavioural checks ("`link_commit` returns `auto_resolved_count` ≥ 0").
+
+> **Risk** (`risk:L1` / `risk:L2` / `risk:L3`) lives on **PRs**, not issues —
+> see §4.4. Risk is a property of the change being made, knowable only after
+> design. Issues carry priority (urgency); PRs carry risk (review tier).
+
+#### 2.1.1 Priority labels (one per issue, mandatory after triage)
+
+Exactly one priority label per triaged issue. Untriaged issues carry `triage`
+(see §2.1.2) until a maintainer assigns priority.
+
+| Label | Color | Meaning |
+|---|---|---|
+| `P0` | red | Critical — drop everything. Production down, data loss, security regression, ledger corruption. **Triggers an immediate response, even off-hours.** |
+| `P1` | orange | High — ship this milestone. User-impacting bug or committed feature with a deadline. |
+| `P2` | yellow | Medium — next milestone or two. The default for routine new feature work and non-urgent bugs. |
+| `P3` | grey | Low — eventually. Nice-to-have, polish, non-load-bearing improvements. |
+
+**Calibration heuristics**:
+
+- *"If this stays open for the next two months, will any user be unhappy?"*
+  → No: `P3`. Yes: at least `P2`.
+- *"Is there a workaround that's acceptable for the next milestone?"*
+  → Yes: `P2` or lower. No: at least `P1`.
+- *"Is anyone losing data, money, or trust right now?"*
+  → Yes: `P0`. No: not `P0`.
+
+**P0 is rare.** If we have more than two open `P0` issues at any time, something
+is wrong with our triage discipline — `P0` should mean *"the team stops other
+work"*. Promoting too many issues to `P0` dilutes the signal.
+
+#### 2.1.2 State labels (optional, orthogonal to priority)
+
+| Label | Color | Meaning |
+|---|---|---|
+| `triage` | light grey | Needs assessment; no priority assigned yet. Default for newly-filed issues. |
+| `blocked` | dark grey | Temporarily blocked by another issue or external dependency. Always include a comment naming the blocker. |
+| `parked` | purple | Known issue, deferred indefinitely (external blocker, strategic pause, cost > benefit at current scale). Not abandoned, but not on a roadmap. **Only maintainers apply `parked`.** |
+
+State labels are *orthogonal* to priority. A `P1 + blocked` issue is high-priority
+work waiting on a dependency; a `P3 + parked` issue is a low-value idea we're
+not pursuing now but don't want to lose. **Never close a `parked` issue** —
+keep it open as a known-deferred record so future filers find it.
+
+The existing `merged-to-dev` label (post-merge status, not pre-merge state)
+remains separate from this axis. See §6.8.
 
 ### 2.2 Closure
 
