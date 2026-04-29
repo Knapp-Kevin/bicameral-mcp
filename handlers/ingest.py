@@ -62,6 +62,10 @@ def _normalize_payload(payload: dict) -> dict:
             mapping["signoff"] = d.signoff
         if d.feature_group is not None:
             mapping["feature_group"] = d.feature_group
+        # #109 — thread optional governance metadata from IngestDecision
+        # to the per-mapping payload so the ledger write picks it up.
+        if d.governance is not None:
+            mapping["governance"] = d.governance
         mappings.append(mapping)
 
     # Action items are task assignments, not product decisions — they belong in a

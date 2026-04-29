@@ -39,6 +39,13 @@ from contracts import (
     DecisionMatch,
     PreflightResponse,
 )
+from governance import config as governance_config
+from governance import engine as governance_engine
+from governance.contracts import (
+    GovernanceFinding,
+    derive_governance_metadata,
+)
+from governance.finding_factories import consolidate, from_preflight_drift_candidate
 from handlers.action_hints import generate_hints_from_findings
 from handlers.analysis import _to_brief_decision
 from preflight_telemetry import (
@@ -417,6 +424,18 @@ async def handle_preflight(
     fired = bool(region_matches or unresolved_collisions or context_pending_ready or guided_mode)
     action_hints = generate_hints_from_findings([], drift_candidates, [], guided_mode)
 
+    # #108-#110 — governance finding (Phase 3). Build a finding per
+    # drifted region candidate, run the engine, consolidate per
+    # (decision_id, region_id), and attach the highest-severity
+    # consolidated finding to the response. Phase 4 (#112) will plumb
+    # bypass-recency from preflight_telemetry.recent_bypass_seconds;
+    # Phase 3 always passes None.
+    governance_finding: GovernanceFinding | None = None
+    try:
+        governance_finding = await _build_governance_finding(ctx, drift_candidates)
+    except Exception as exc:
+        logger.debug("[preflight] governance finding build failed: %s", exc)
+
     response = PreflightResponse(
         topic=topic,
         fired=fired,
@@ -433,6 +452,7 @@ async def handle_preflight(
         sync_metrics=sync_metrics,
         product_stage=_PRODUCT_STAGE_MSG if _should_show_product_stage() else None,
         preflight_id=pid,
+        governance_finding=governance_finding,
     )
 
     # #65 — capture-loop event. surfaced_ids is the union of decision_ids the
@@ -459,3 +479,109 @@ async def handle_preflight(
         )
 
     return response
+
+
+async def _build_governance_finding(
+    ctx,
+    drift_candidates: list[BriefDecision],
+) -> GovernanceFinding | None:
+    """Build a consolidated governance finding for preflight drift
+    candidates. Returns the highest-severity consolidated finding
+    (with policy_result attached) or None if there are no candidates.
+
+    Engine runs with ``bypass_recency_seconds=None`` until Phase 4
+    (#112) wires the actual lookup via preflight_telemetry.
+    """
+    if not drift_candidates:
+        return None
+
+    inner = getattr(ctx.ledger, "_inner", ctx.ledger)
+    client = getattr(inner, "_client", None)
+    if client is None:
+        return None
+
+    cfg = governance_config.load_config()
+
+    findings: list[GovernanceFinding] = []
+    for candidate in drift_candidates:
+        decision_level: str | None = None
+        signoff_state: str | None = None
+        decision_status_pipeline: str | None = None
+        governance_raw: dict | None = None
+        try:
+            rows = await client.query(
+                f"SELECT decision_level, signoff, status, governance "
+                f"FROM {candidate.decision_id} LIMIT 1"
+            )
+            if rows:
+                row = rows[0]
+                decision_level = row.get("decision_level") or None
+                sf = row.get("signoff") or {}
+                if isinstance(sf, dict):
+                    signoff_state = sf.get("state")
+                decision_status_pipeline = row.get("status")
+                gov = row.get("governance")
+                if isinstance(gov, dict) and gov:
+                    governance_raw = gov
+        except Exception as exc:
+            logger.debug(
+                "[preflight] decision lookup for governance failed (%s): %s",
+                candidate.decision_id,
+                exc,
+            )
+
+        explicit = None
+        if governance_raw:
+            try:
+                from governance.contracts import GovernanceMetadata
+
+                explicit = GovernanceMetadata.model_validate(governance_raw)
+            except Exception:
+                explicit = None
+        metadata = derive_governance_metadata(decision_level, explicit)
+
+        # Determine the engine's DecisionStatus from the raw row signals.
+        if signoff_state in (
+            "ratified",
+            "proposed",
+            "rejected",
+            "superseded",
+            "collision_pending",
+            "context_pending",
+        ):
+            decision_status = signoff_state
+        elif decision_status_pipeline == "ungrounded":
+            decision_status = "ungrounded"
+        else:
+            decision_status = "active"
+
+        finding = from_preflight_drift_candidate(candidate, metadata)
+        policy = governance_engine.evaluate(
+            finding=finding,
+            metadata=metadata,
+            config=cfg,
+            decision_status=decision_status,  # type: ignore[arg-type]
+            bypass_recency_seconds=None,
+        )
+        findings.append(finding.model_copy(update={"policy_result": policy}))
+
+    if not findings:
+        return None
+
+    consolidated = consolidate(findings)
+    if not consolidated:
+        return None
+    # Sort by action ladder severity so the response surfaces the
+    # strongest signal. Stable on ties.
+    ladder = governance_engine._ACTION_LADDER
+
+    def _severity_key(f: GovernanceFinding) -> int:
+        if f.policy_result is None:
+            return -1
+        try:
+            return ladder.index(f.policy_result.action)
+        except ValueError:
+            return -1
+
+    consolidated.sort(key=_severity_key, reverse=True)
+    return consolidated[0]

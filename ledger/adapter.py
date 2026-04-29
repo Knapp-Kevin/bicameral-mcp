@@ -1041,6 +1041,10 @@ class SurrealDBLedgerAdapter:
             feature_group = mapping.get("feature_group") or None
             decision_level = mapping.get("decision_level") or None
             parent_decision_id = mapping.get("parent_decision_id") or None
+            # #109 — optional governance metadata; threaded into the
+            # decision row's ``governance`` flexible-object field. None
+            # leaves the field at the schema default (NONE).
+            governance = mapping.get("governance") or None
 
             # Create input_span node only when verbatim text is available.
             # Per v0.5.0 contract: span.text must be non-empty; the schema
@@ -1076,6 +1080,7 @@ class SurrealDBLedgerAdapter:
                 feature_group=feature_group,
                 decision_level=decision_level,
                 parent_decision_id=parent_decision_id,
+                governance=governance,
             )
             decisions_created += 1
 

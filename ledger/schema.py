@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 #   - edges: yields(input_span→decision), binds_to(decision→code_region),
 #             locates(symbol→code_region)
 #   - removed: maps_to, implements
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Maps schema version → minimum bicameral-mcp code version that understands it.
 # Used to produce actionable "upgrade your binary" messages.
@@ -43,6 +43,7 @@ SCHEMA_COMPATIBILITY: dict[int, str] = {
     12: "0.12.0",  # placeholder; release-eng pins final value at PR merge
     13: "0.12.1",  # provenance FLEXIBLE on binds_to (#72)
     14: "0.13.0",  # placeholder; release-eng pins final value at PR merge — Phase 4 (#61)
+    15: "0.15.x",  # decision.governance (#109 — governance metadata)
 }
 
 # Migrations that drop or recreate tables/data. These are never auto-applied;
@@ -128,6 +129,14 @@ _TABLES = [
     "DEFINE FIELD decision_level     ON decision TYPE option<string> DEFAULT NONE "
     "ASSERT $value = NONE OR $value IN ['L1', 'L2', 'L3']",
     "DEFINE FIELD parent_decision_id ON decision TYPE option<string> DEFAULT NONE",
+    # v15 (#109) — optional governance metadata. FLEXIBLE because the
+    # nested object carries pydantic-validated keys (decision_class,
+    # risk_class, escalation_class, owner, supervisor,
+    # notification_channels, protected_component, review_after);
+    # SurrealDB v2 silently strips nested keys for plain TYPE object
+    # without FLEXIBLE. None for pre-v15 rows; readers fall back to
+    # ``derive_governance_metadata`` defaults at evaluation time.
+    "DEFINE FIELD governance         ON decision FLEXIBLE TYPE option<object> DEFAULT NONE",
     "DEFINE INDEX idx_decision_canonical ON decision FIELDS canonical_id UNIQUE",
     "DEFINE INDEX idx_decision_fts ON decision FIELDS description "
     "SEARCH ANALYZER biz_analyzer BM25(1.2, 0.75) HIGHLIGHTS",
@@ -868,6 +877,27 @@ async def _migrate_v13_to_v14(client: LedgerClient) -> None:
     )
 
 
+async def _migrate_v14_to_v15(client: LedgerClient) -> None:
+    """v14 → v15: Add optional governance metadata to decision (#109).
+
+    Single additive change: ``decision.governance`` flexible-object
+    field defaulting to NONE. Pre-v15 rows read back ``governance =
+    NONE`` and fall through to ``derive_governance_metadata`` defaults
+    at engine evaluation time.
+
+    FLEXIBLE is required so nested keys (decision_class, risk_class,
+    escalation_class, owner, supervisor, notification_channels,
+    protected_component, review_after) survive SurrealDB v2's nested-
+    key stripping for plain TYPE object — same lesson as binds_to
+    provenance (#72).
+    """
+    await _execute_define_idempotent(
+        client,
+        "DEFINE FIELD OVERWRITE governance ON decision FLEXIBLE TYPE option<object> DEFAULT NONE",
+    )
+    logger.info("[migration] v14 → v15: decision.governance field added")
+
+
 _MIGRATIONS: dict[int, ...] = {
     5: _migrate_v4_to_v5,
     6: _migrate_v5_to_v6,
@@ -879,6 +909,7 @@ _MIGRATIONS: dict[int, ...] = {
     12: _migrate_v11_to_v12,
     13: _migrate_v12_to_v13,
     14: _migrate_v13_to_v14,
+    15: _migrate_v14_to_v15,
 }
 
 

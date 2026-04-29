@@ -3,6 +3,28 @@
 All notable changes to bicameral-mcp are tracked here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.17.0 -- governance contracts + escalation engine (#108-#110, Phases 1-3 of #108-#112 plan)
+
+Adds `governance/` package with the deterministic escalation policy engine, decision/risk/escalation metadata contracts, and the consolidated `GovernanceFinding` wrapper. Engine is non-blocking by design (`config.allow_blocking: Literal[False]` locks the type). Phase 4 (HITL bypass flow) and Phase 5 (docs) ship in follow-up PRs.
+
+### Added
+- `governance/contracts.py` -- GovernanceMetadata, GovernanceFinding, GovernancePolicyResult; `derive_governance_metadata` with L1/L2/L3 default mapping
+- `governance/finding_factories.py` -- builders + `consolidate()` per (decision_id, region_id)
+- `governance/engine.py` -- pure deterministic evaluator decomposed into `_check_required_conditions`, `_apply_class_defaults`, `_apply_bypass_downgrade`, `_apply_max_native_ceiling`
+- `governance/config.py` -- `.bicameral/governance.yml` parser with locked `allow_blocking: Literal[False]`; fail-soft on malformed YAML
+- `bicameral.evaluate_governance` MCP tool (read-only)
+- `governance_finding` field on PreflightResponse
+- `decision.governance` schema field (v14 -> v15 migration)
+- `docs/governance.example.yml` canonical config example
+
+### Closes
+
+#109, #110 (Phases 1-2 fully)
+
+### Refs
+
+#108 (engine landed; Phase 4 HITL bypass flow ships separately for #112)
+
 ## [Unreleased]
 
 ### Added

@@ -18,6 +18,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from governance.contracts import GovernanceFinding
+
 # ── Skill telemetry diagnostic models ────────────────────────────────
 # One model per skill. extra="forbid" means the handler can detect and
 # echo back any field names the LLM sent that don't belong here.
@@ -465,6 +467,11 @@ class IngestMapping(BaseModel):
     feature_group: str | None = None
     decision_level: str | None = None  # L1 | L2 | L3
     parent_decision_id: str | None = None
+    # #109 — optional governance metadata. None means derive from
+    # decision_level via governance.contracts.derive_governance_metadata
+    # at evaluation time. Stored as a free-form dict on the wire so the
+    # ingest contract doesn't pull pydantic types from governance.*.
+    governance: dict | None = None
 
 
 class IngestDecision(BaseModel):
@@ -489,6 +496,8 @@ class IngestDecision(BaseModel):
     source_excerpt: str = ""
     signoff: dict | None = None
     feature_group: str | None = None
+    # #109 — optional governance metadata threaded to the ledger.
+    governance: dict | None = None
 
 
 class IngestActionItem(BaseModel):
@@ -652,6 +661,31 @@ class PreflightResponse(BaseModel):
     # #65 — opaque per-call id for the preflight telemetry capture loop.
     # None when telemetry is disabled (BICAMERAL_PREFLIGHT_TELEMETRY != 1).
     preflight_id: str | None = None
+    # #108-#110 — consolidated governance finding (with attached
+    # policy_result) when preflight surfaced one or more drift candidates
+    # for a region-anchored decision. None when there are no findings.
+    # Phase 4 (#112) will populate ``policy_result.action`` with
+    # bypass-aware downgrades; Phase 3 always passes
+    # ``bypass_recency_seconds=None`` to the engine.
+    governance_finding: GovernanceFinding | None = None
+
+
+# ── Tool: bicameral.evaluate_governance (#108) ───────────────────────
+
+
+class EvaluateGovernanceResponse(BaseModel):
+    """Response envelope for ``bicameral.evaluate_governance``.
+
+    Read-only ad-hoc evaluation: given a (decision_id, region_id?)
+    pair, returns the engine's policy result for the synthetic finding
+    constructed from the current ledger state. ``error`` is set when
+    the decision_id is unknown; ``finding`` is None in that case.
+    """
+
+    decision_id: str
+    region_id: str | None = None
+    finding: GovernanceFinding | None = None
+    error: str | None = None
 
 
 # ── Tool 10: /bicameral_judge_gaps ───────────────────────────────────
@@ -785,6 +819,10 @@ class HistoryDecision(BaseModel):
     decision_level: str | None = None  # L1 | L2 | L3 — for balance-sheet display
     parent_decision_id: str | None = None
     ephemeral: bool = False  # True when current status was determined by a feature-branch commit not yet in authoritative ref
+    # #109 — optional governance metadata when present on the decision
+    # row. Pre-v15 rows omit this; readers fall back to defaults derived
+    # from decision_level at evaluation time.
+    governance: dict | None = None
 
 
 class HistoryFeature(BaseModel):

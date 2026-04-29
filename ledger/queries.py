@@ -573,6 +573,7 @@ async def upsert_decision(
     signoff: dict | None = None,
     decision_level: str | None = None,
     parent_decision_id: str | None = None,
+    governance: dict | None = None,
 ) -> str:
     """Create or update a decision node. Returns the decision ID string.
 
@@ -612,6 +613,9 @@ async def upsert_decision(
         if parent_decision_id is not None:
             set_clause += ", parent_decision_id = $parent_decision_id"
             update_params["parent_decision_id"] = parent_decision_id
+        if governance is not None:
+            set_clause += ", governance = $governance"
+            update_params["governance"] = governance
         await client.query(
             f"UPDATE {existing[0]['id']} SET {set_clause}",
             update_params,
@@ -648,6 +652,9 @@ async def upsert_decision(
     if parent_decision_id is not None:
         create_clause += ", parent_decision_id=$parent_decision_id"
         create_params["parent_decision_id"] = parent_decision_id
+    if governance is not None:
+        create_clause += ", governance=$governance"
+        create_params["governance"] = governance
     rows = await client.query(create_clause, create_params)
     return str(rows[0].get("id", "")) if rows else ""
 
