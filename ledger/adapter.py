@@ -421,6 +421,35 @@ class SurrealDBLedgerAdapter:
 
         state = await get_sync_state(self._client, repo_path)
         if state and state.get("last_synced_commit") == commit_hash:
+            # Commit hasn't moved, but decisions ingested after the last sync
+            # are still at status='pending' with no compliance checks generated.
+            # Surface them so the caller LLM can resolve them now.
+            pending_checks: list[dict] = []
+            try:
+                stale_pending = await get_pending_decisions_with_regions(self._client)
+                for row in stale_pending:
+                    region_id = str(row.get("region_id", ""))
+                    if not region_id:
+                        continue
+                    fp = row.get("file_path", "")
+                    sl = row.get("start_line", 0)
+                    el = row.get("end_line", 0)
+                    current_hash = compute_content_hash(fp, sl, el, repo_path, ref=commit_hash)
+                    if not current_hash:
+                        continue
+                    code_body = _extract_code_body(fp, sl, el, repo_path, ref=commit_hash)
+                    pending_checks.append({
+                        "phase": "ingest",
+                        "decision_id": str(row.get("decision_id", "")),
+                        "region_id": region_id,
+                        "decision_description": str(row.get("description", "")),
+                        "file_path": fp,
+                        "symbol": row.get("symbol_name", ""),
+                        "content_hash": current_hash,
+                        "code_body": code_body,
+                    })
+            except Exception as exc:
+                logger.warning("[link_commit] could not surface pending decisions on already_synced: %s", exc)
             return {
                 "synced": True,
                 "commit_hash": commit_hash,
@@ -431,6 +460,8 @@ class SurrealDBLedgerAdapter:
                 "undocumented_symbols": [],
                 "sweep_scope": "head_only",
                 "range_size": 0,
+                "pending_compliance_checks": pending_checks,
+                "pending_grounding_checks": [],
             }
 
         last_synced = (state or {}).get("last_synced_commit", "") or ""
