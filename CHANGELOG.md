@@ -3,6 +3,45 @@
 All notable changes to bicameral-mcp are tracked here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## v0.16.x -- Dashboard decision_level surfacing (#76 part 1)
+
+Read-side UI for `decision_level`. The pre-existing L1/L2/L3 badges
+(shipped in #71 / CodeGenome Phase 1+2) are preserved; this PR adds the
+missing amber **Unclassified** state for rows where `decision_level` is
+NULL plus a top-of-page filter dropdown so reviewers can scope the
+ledger view to a single level (or to the unclassified backlog).
+
+### Added
+
+- `.lvl-unclassified` CSS class in `assets/dashboard.html` -- amber
+  (`rgb(249, 115, 22)`) badge that pairs visually with the existing
+  L1/L2/L3 family.
+- Rendering branch in `renderDec` for null `decision_level`: emits a
+  `lvl-unclassified` badge labeled `Unclassified` and stamps the row
+  with `data-level="unclassified"`.
+- Each rendered decision row now carries
+  `data-level="L1"|"L2"|"L3"|"unclassified"` and the
+  `decision-row` class so client-side filters can target it.
+- `<select id="lvl-filter">` in the topbar with five options
+  (All / L1 / L2 / L3 / Unclassified) wired to a new
+  `applyLevelFilter(value)` JS helper that toggles row visibility via
+  `style.display`.
+- `tests/test_dashboard_unclassified_rendering.py` -- six HTML-pattern
+  assertions covering the CSS rule, the render branch, the dropdown
+  markup, and the filter function. The dashboard render path is inline
+  JS in the HTML template, so the tests assert against the
+  source-of-truth template rather than booting a DOM.
+
+### Deferred to part 2
+
+- Inline-edit POST endpoint (Phase 6 of the plan). It calls
+  `ledger.queries.update_decision_level`, which lands in the sibling
+  classifier PR (#77). Part 2 ships once that helper is on `dev`.
+
+### Closes
+
+Refs #76 (part 1 of 2)
+
 ## v0.15.0 — Preflight telemetry capture loop (pieces 1–4) — built via [QorLogic SDLC](https://github.com/MythologIQ-Labs-LLC/qor-logic)
 
 First slice of the failure-mode triage workflow from #65. Adds a local-only,
